@@ -9,7 +9,7 @@ import { promisify } from 'util';
 import JSZip from 'jszip';
 import mime from 'mime-types';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { s3Client, OLA_S3_BUCKET_NAME, MissingS3ConfigError } from '@/lib/s3Client'; // Import MissingS3ConfigError
+import { s3Client, OLA_S3_BUCKET_NAME, MissingS3ConfigError } from '@/lib/s3Client';
 import { TEMP_UPLOAD_DIR } from '@/config/constants';
 
 const execAsync = promisify(exec);
@@ -48,10 +48,9 @@ async function uploadDirectoryRecursiveS3(
   logsRef.value += `uploadDirectoryRecursiveS3: Starting upload from ${localDirPath} to base key ${s3BaseKey}\n`;
   if (!OLA_S3_BUCKET_NAME) {
     logsRef.value += 'Error: OLA_S3_BUCKET_NAME is not configured for S3 upload.\n';
-    // This error should ideally be caught before this function is even called.
     throw new MissingS3ConfigError('OLA_S3_BUCKET_NAME is not configured for S3 upload.');
   }
-  const currentS3Client = s3Client(); // This can throw if S3 config is bad
+  const currentS3Client = s3Client();
 
   const entries = await fs.readdir(localDirPath, { withFileTypes: true });
   for (const entry of entries) {
@@ -85,10 +84,10 @@ const sanitizeName = (name: string | undefined | null): string => {
   return name
     .trim()
     .replace(/\.zip$/i, '')
-    .replace(/\.git$/i, '') 
-    .replace(/\/$/, '') 
-    .split('/') 
-    .pop() || 'untitled-project' 
+    .replace(/\.git$/i, '')
+    .replace(/\/$/, '')
+    .split('/')
+    .pop() || 'untitled-project'
     .replace(/\s+/g, '-')
     .replace(/[^a-zA-Z0-9-]/g, '')
     .replace(/-+/g, '-')
@@ -97,7 +96,7 @@ const sanitizeName = (name: string | undefined | null): string => {
 };
 
 function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyzed: string, logsRef: { value: string }): FrameworkDetectionResult {
-  logsRef.value += `Performing non-AI framework detection based on ${fileNameAnalyzed}.\n`;
+  logsRef.value += `[nonAIDetectFramework] Performing non-AI framework detection based on ${fileNameAnalyzed}.\n`;
   if (packageJsonContent && fileNameAnalyzed.includes('package.json')) {
     try {
       const pkg = JSON.parse(packageJsonContent);
@@ -105,53 +104,53 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
       const scripts = pkg.scripts || {};
 
       if (dependencies.next) {
-        logsRef.value += "Detected Next.js.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Next.js.\n";
         return { framework: 'nextjs', build_command: scripts.build || 'next build', output_directory: '.next', reasoning: "Next.js dependency found." };
       }
       if (dependencies['@remix-run/dev'] || dependencies.remix) {
-        logsRef.value += "Detected Remix.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Remix.\n";
         return { framework: 'remix', build_command: scripts.build || 'remix build', output_directory: 'public/build', reasoning: "Remix dependency found." };
       }
       if (dependencies['@sveltejs/kit']) {
-        logsRef.value += "Detected SvelteKit.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected SvelteKit.\n";
         return { framework: 'sveltekit', build_command: scripts.build || 'vite build', output_directory: '.svelte-kit/output/client', reasoning: "SvelteKit dependency found." };
       }
       if (dependencies.nuxt) {
-        logsRef.value += "Detected Nuxt.js.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Nuxt.js.\n";
         return { framework: 'nuxtjs', build_command: scripts.build || 'npm run build', output_directory: '.output/public', reasoning: "Nuxt.js dependency found." };
       }
       if (dependencies.astro) {
-        logsRef.value += "Detected Astro.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Astro.\n";
         return { framework: 'astro', build_command: scripts.build || 'astro build', output_directory: 'dist', reasoning: "Astro dependency found." };
       }
        if (dependencies.vite && (dependencies['@vitejs/plugin-react'] || dependencies['@vitejs/plugin-react-swc'])) {
-        logsRef.value += "Detected Vite with React.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Vite with React.\n";
         return { framework: 'vite-react', build_command: scripts.build || 'vite build', output_directory: 'dist', reasoning: "Vite with React plugin detected." };
       }
        if (dependencies['react-scripts']) {
-        logsRef.value += "Detected Create React App.\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Create React App.\n";
         return { framework: 'cra', build_command: scripts.build || 'npm run build', output_directory: 'build', reasoning: "Create React App (react-scripts) dependency found." };
       }
       if (dependencies.react && dependencies['react-dom']) {
-        logsRef.value += "Detected Generic React project (react and react-dom found).\n";
+        logsRef.value += "[nonAIDetectFramework] Detected Generic React project (react and react-dom found).\n";
         return { framework: 'generic-react', build_command: scripts.build || 'npm run build', output_directory: 'dist', reasoning: "Generic React (react and react-dom) dependencies found." };
       }
 
-      logsRef.value += "package.json found, but no clear common framework indicators. Assuming static or custom Node.js build.\n";
+      logsRef.value += "[nonAIDetectFramework] package.json found, but no clear common framework indicators. Assuming static or custom Node.js build.\n";
       if (scripts.build) {
         return { framework: 'custom-build', build_command: scripts.build, output_directory: 'dist', reasoning: "package.json with a build script, but unrecognized frontend framework. Assuming 'dist' output." };
       }
       return { framework: 'static', reasoning: "package.json present but no specific framework indicators or standard build script found." };
     } catch (e: any) {
-      logsRef.value += `Error parsing package.json: ${e.message}. Assuming static.\n`;
+      logsRef.value += `[nonAIDetectFramework] Error parsing package.json: ${e.message}. Assuming static.\n`;
       return { framework: 'static', reasoning: "Failed to parse package.json." };
     }
   } else if (fileNameAnalyzed.includes('index.html')) {
-    logsRef.value += "No package.json prioritized. index.html found. Assuming static.\n";
+    logsRef.value += "[nonAIDetectFramework] No package.json prioritized. index.html found. Assuming static.\n";
     return { framework: 'static', reasoning: "index.html found, no package.json prioritized." };
   }
 
-  logsRef.value += "No package.json or index.html found for analysis. Assuming static.\n";
+  logsRef.value += "[nonAIDetectFramework] No package.json or index.html found for analysis. Assuming static.\n";
   return { framework: 'static', reasoning: "No definitive project files (package.json, index.html) found for analysis." };
 }
 
@@ -159,29 +158,27 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   console.log('[deployProject] Action initiated.');
   let logsRef = { value: 'Deployment Logs:\n----------------\n' };
   let tempZipPath = '';
-  let baseExtractionDir = ''; 
-  let projectRootPath = ''; 
+  let baseExtractionDir = '';
+  let projectRootPath = '';
   let finalProjectName = 'untitled-project';
-  let uniqueTempIdDir: string | null = null; 
+  let uniqueTempIdDir: string | null = null;
 
   try {
     console.log('[deployProject] Entered main try block.');
     logsRef.value += '[deployProject] Entered main try block.\n';
 
-    // S3 client initialization and configuration checks - MOVED INSIDE TRY
     if (!OLA_S3_BUCKET_NAME) {
         logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
-        // Throw MissingS3ConfigError so it's caught by the main catch block with specific handling
         throw new MissingS3ConfigError('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); // Call to initialize/get client. This can throw if config is bad.
+    s3Client(); 
     logsRef.value += 'S3 client successfully initialized or retrieved, and OLA_S3_BUCKET_NAME is present.\n';
     
     await ensureDirectoryExists(TEMP_UPLOAD_DIR);
     logsRef.value += `Base temporary upload directory ensured: ${TEMP_UPLOAD_DIR}\n`;
 
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    uniqueTempIdDir = path.join(TEMP_UPLOAD_DIR, uniqueId); 
+    uniqueTempIdDir = path.join(TEMP_UPLOAD_DIR, uniqueId);
     await ensureDirectoryExists(uniqueTempIdDir);
     logsRef.value += `Unique temporary directory for this deployment: ${uniqueTempIdDir}\n`;
 
@@ -191,7 +188,6 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     if (!file && !githubUrl) {
       logsRef.value += 'Error: No file uploaded and no GitHub URL provided.\n';
       console.log('[deployProject] No input provided, returning error.');
-      // This return is fine as it's a controlled exit with a valid DeploymentResult
       return { success: false, message: 'No file uploaded or GitHub URL provided.', logs: logsRef.value, projectName: finalProjectName };
     }
     
@@ -212,7 +208,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         logsRef.value += `Git clone stdout:\n${cloneOutput.stdout || 'N/A'}\n`;
         if (cloneOutput.stderr) logsRef.value += `Git clone stderr:\n${cloneOutput.stderr}\n`;
         logsRef.value += `Repository cloned successfully into ${baseExtractionDir}.\n`;
-        projectRootPath = baseExtractionDir; 
+        projectRootPath = baseExtractionDir;
         sourceNameForProject = githubUrl;
       } catch (cloneError: any) {
         logsRef.value += `Error cloning repository: ${cloneError.message}\n`;
@@ -221,7 +217,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         throw new Error(`Failed to clone repository: ${cloneError.message}`);
       }
     } else if (file) {
-      logsRef.value += `Processing uploaded file: ${file.name}\n`; // Moved log here
+      logsRef.value += `Processing uploaded file: ${file.name}\n`;
       if (file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
         logsRef.value += `Error: Invalid file type received: ${file.type}. Please upload a ZIP file.\n`;
         return { success: false, message: 'Invalid file type. Please upload a ZIP file.', logs: logsRef.value, projectName: finalProjectName };
@@ -260,12 +256,13 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       }
       sourceNameForProject = file.name;
     } else {
+      logsRef.value += 'Error: No file or GitHub URL provided for deployment source.\n';
       throw new Error("No deployment source (ZIP or Git URL) provided.");
     }
 
     logsRef.value += `Determining project name from source: ${sourceNameForProject}\n`;
     const fileBasedName = sanitizeName(sourceNameForProject);
-    logsRef.value += `Sanitized name: "${fileBasedName}")\n`;
+    logsRef.value += `Sanitized name: "${fileBasedName}"\n`;
     const minNameLength = 3;
     if (fileBasedName && fileBasedName.length >= minNameLength) {
       finalProjectName = fileBasedName;
@@ -322,14 +319,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
          const determinedProjectRoot = path.join(searchBaseDir, path.dirname(chosenFile));
          return { filePath: path.join(searchBaseDir, chosenFile), content: await fs.readFile(path.join(searchBaseDir, chosenFile), 'utf-8'), relativePath: chosenFile, projectRoot: determinedProjectRoot };
       }
-      const determinedProjectRoot = githubUrl ? projectRootPath : searchBaseDir; // If git clone, projectRootPath is already baseExtractionDir (clone root)
+      const determinedProjectRoot = githubUrl ? projectRootPath : searchBaseDir;
       return { filePath: null, content: null, relativePath: null, projectRoot: determinedProjectRoot };
     };
 
     const analysisResult = await findAnalysisFile(baseExtractionDir, baseExtractionDir);
     analysisFileRelativePath = analysisResult.relativePath;
     analysisFileContent = analysisResult.content;
-    projectRootPath = analysisResult.projectRoot; 
+    projectRootPath = analysisResult.projectRoot;
 
     if (analysisFileRelativePath && analysisFileContent) {
         logsRef.value += `Framework detection input: content of '${analysisFileRelativePath}'. Project root set to: ${projectRootPath}\n`;
@@ -367,6 +364,18 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     if (needsBuild && frameworkDetectionResult.build_command) {
       logsRef.value += `Project needs build. Starting build process in ${projectRootPath}...\n`;
       try {
+        logsRef.value += `Attempting to update Browserslist database in ${projectRootPath}...\n`;
+        try {
+          const updateDbOutput = await execAsync('npx update-browserslist-db@latest --yes', { cwd: projectRootPath });
+          logsRef.value += `Browserslist update stdout:\n${updateDbOutput.stdout || 'N/A'}\n`;
+          if (updateDbOutput.stderr) logsRef.value += `Browserslist update stderr:\n${updateDbOutput.stderr}\n`;
+          logsRef.value += `Browserslist database updated successfully.\n`;
+        } catch (updateDbError: any) {
+          logsRef.value += `Warning: Failed to update Browserslist database: ${updateDbError.message}. Build will proceed, but might encounter related issues.\n`;
+          if (updateDbError.stdout) logsRef.value += `Browserslist update stdout (on error):\n${updateDbError.stdout}\n`;
+          if (updateDbError.stderr) logsRef.value += `Browserslist update stderr (on error):\n${updateDbError.stderr}\n`;
+        }
+        
         logsRef.value += `Running 'npm install --legacy-peer-deps' in ${projectRootPath}...\n`;
         const installOutput = await execAsync('npm install --legacy-peer-deps', { cwd: projectRootPath });
         logsRef.value += `npm install stdout:\n${installOutput.stdout || 'N/A'}\n`;
@@ -374,22 +383,19 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
         let buildCommandToExecute = frameworkDetectionResult.build_command;
         const buildEnv = { ...process.env };
-        const publicUrlForAssets = `/sites/${finalProjectName}`; // No trailing slash for PUBLIC_URL
+        const publicUrlForAssets = `/sites/${finalProjectName}`; 
         
         if (['cra', 'generic-react'].includes(frameworkDetectionResult.framework)) {
             buildEnv.PUBLIC_URL = publicUrlForAssets;
             logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for build.\n`;
         } else if (frameworkDetectionResult.framework === 'vite-react') {
-            const viteBasePath = publicUrlForAssets.endsWith('/') ? publicUrlForAssets : `${publicUrlForAssets}/`; // Vite needs trailing slash for base
+            const viteBasePath = publicUrlForAssets.endsWith('/') ? publicUrlForAssets : `${publicUrlForAssets}/`;
             buildCommandToExecute = `${buildCommandToExecute.replace(/vite build(?!\s*--base)/, `vite build --base ${viteBasePath}`)}`;
             logsRef.value += `Prepending --base ${viteBasePath} to Vite build command, resulting in: '${buildCommandToExecute}'.\n`;
         }
         else if (['nextjs', 'remix', 'sveltekit', 'nuxtjs', 'astro'].includes(frameworkDetectionResult.framework)) {
-            // For these frameworks, a base path is usually set in their respective config files (e.g., next.config.js basePath).
-            // Setting PUBLIC_URL might help with some asset prefixing but isn't the primary method for subpath hosting.
-            // The platform currently doesn't modify these config files.
-            buildEnv.PUBLIC_URL = publicUrlForAssets; 
-            logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for ${frameworkDetectionResult.framework} build. Note: Framework-specific base path config (e.g., next.config.js assetPrefix or basePath) might be needed for full subpath compatibility.\n`;
+            buildEnv.PUBLIC_URL = publicUrlForAssets;
+            logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for ${frameworkDetectionResult.framework} build. Note: Framework-specific base path config might be needed for full subpath compatibility.\n`;
         }
 
         logsRef.value += `Running build command: '${buildCommandToExecute}' in ${projectRootPath} with relevant env vars...\n`;
@@ -418,14 +424,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           const defaultOutputDirs = ['build', 'dist', 'out', '.next', '.output/public', 'public/build', '.svelte-kit/output/client'];
           logsRef.value += `Build output directory '${detectedOutputDir || ''}' not confirmed. Searching common output directories: ${defaultOutputDirs.join(', ')}\n`;
           for (const dir of defaultOutputDirs) {
-            if (detectedOutputDir === dir && buildSourcePath) continue; 
+            if (detectedOutputDir === dir && buildSourcePath) continue;
             const potentialPath = path.join(projectRootPath, dir);
             try {
               await fs.access(potentialPath);
                if ((await fs.stat(potentialPath)).isDirectory()) {
                   buildSourcePath = potentialPath;
                   logsRef.value += `Found build output directory (fallback search) at: ${buildSourcePath}\n`;
-                  frameworkDetectionResult.output_directory = dir; // Update if found via fallback
+                  frameworkDetectionResult.output_directory = dir;
                   break;
               }
             } catch { /* Directory does not exist or not accessible */ }
@@ -450,7 +456,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         if (buildError.stdout) logsRef.value += `Build stdout:\n${buildError.stdout}\n`;
         if (buildError.stderr) logsRef.value += `Build command stderr:\n${buildError.stderr}\n`;
         if (buildError.stack) logsRef.value += `Build stack:\n${buildError.stack}\n`;
-        throw buildError; 
+        throw buildError;
       }
     } else {
       logsRef.value += `Static site or no build needed. Uploading files from ${projectRootPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
@@ -458,7 +464,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       logsRef.value += `Static files uploaded successfully to S3.\n`;
     }
 
-    const deployedUrl = `/sites/${finalProjectName}`; 
+    const deployedUrl = `/sites/${finalProjectName}`;
     logsRef.value += `Deployment successful. Access at: ${deployedUrl}\n`;
     console.log(`[deployProject] Success. Returning result for project: ${finalProjectName}. URL: ${deployedUrl}`);
     return {
@@ -476,7 +482,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     let e_message = "An unknown error occurred during deployment.";
     let e_name = "UnknownError";
 
-    if (error instanceof MissingS3ConfigError) { // Specific check for S3 config errors
+    if (error instanceof MissingS3ConfigError) {
         e_message = error.message;
         e_name = error.name;
         logsRef.value += `S3 Configuration Error: ${error.message}\n`;
@@ -505,7 +511,6 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
 
     let detailedErrorMessage = e_message;
-    // Avoid prepending name if it's already part of the message or a generic 'Error'
     if (e_name !== "UnknownError" && e_name !== "" && e_name !== "Error" && !e_message.toLowerCase().includes(e_name.toLowerCase())) {
         detailedErrorMessage = `${e_name}: ${e_message}`;
     }
@@ -523,7 +528,6 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         console.error('[deployProject] Full error object (server console):', error);
     }
     
-    // Truncate logs for the response to avoid overly large JSON. Server console has full logs.
     const logSnippetForResponse = logsRef.value.length > 3000 ? logsRef.value.substring(0, 2997) + "..." : logsRef.value;
     
     console.error(`[deployProject] Error. Preparing to return failure result for project: ${finalProjectName}`);
@@ -531,7 +535,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         success: false,
         message: `Deployment failed: ${detailedErrorMessage}`,
         logs: logSnippetForResponse,
-        projectName: finalProjectName, 
+        projectName: finalProjectName,
     };
   } finally {
     console.log(`[deployProject] Entered FINALLY block for project: ${finalProjectName}. UniqueTempIdDir: ${uniqueTempIdDir}`);
@@ -539,13 +543,13 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     if (uniqueTempIdDir && uniqueTempIdDir.startsWith(TEMP_UPLOAD_DIR) && uniqueTempIdDir !== TEMP_UPLOAD_DIR) {
       try {
         console.log(`[deployProject] Attempting to delete temporary directory: ${uniqueTempIdDir}`);
-        await fs.rm(uniqueTempIdDir, { recursive: true, force: true }); // Ensure await here
+        await fs.rm(uniqueTempIdDir, { recursive: true, force: true });
         logsRef.value += `Successfully deleted temporary directory: ${uniqueTempIdDir}\n`;
         console.log(`[deployProject] Successfully deleted temporary directory: ${uniqueTempIdDir}`);
       } catch (cleanupError: any) {
         const cleanupErrorMessage = `Error during cleanup of ${uniqueTempIdDir}: ${cleanupError.message}`;
-        logsRef.value += `${cleanupErrorMessage}\n`; // Add to logs
-        console.error(`[deployProject] ${cleanupErrorMessage}`, cleanupError.stack); // Log to server console
+        logsRef.value += `${cleanupErrorMessage}\n`;
+        console.error(`[deployProject] ${cleanupErrorMessage}`, cleanupError.stack);
       }
     } else {
       const skipMessage = `Skipping deletion of non-specific, base, or unset temporary directory: ${uniqueTempIdDir || 'Not Set'}`;
@@ -556,3 +560,4 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   }
 }
 
+    
