@@ -30,7 +30,7 @@ interface DeploymentCompletionPayload {
 export function UploadCard() {
   const [file, setFile] = useState<File | null>(null);
   const [githubUrl, setGithubUrl] = useState('');
-  
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStatus, setCurrentStatus] = useState<string>('Awaiting deployment...');
   const [logs, setLogs] = useState<DeploymentLogEntry[]>([]);
@@ -81,7 +81,7 @@ export function UploadCard() {
     if (files && files[0]) {
       if (files[0].type === 'application/zip' || files[0].type === 'application/x-zip-compressed') {
         setFile(files[0]);
-        setGithubUrl(''); 
+        setGithubUrl('');
       } else {
         toast({
           title: "Invalid File Type",
@@ -98,7 +98,7 @@ export function UploadCard() {
     resetDeploymentState(); // Reset state for new input
     setGithubUrl(event.target.value);
     if (event.target.value) {
-      setFile(null); 
+      setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
@@ -115,7 +115,7 @@ export function UploadCard() {
     }
 
     // Reset state for this new submission attempt, ensuring old EventSource is closed.
-    cleanupEventSource(); 
+    resetDeploymentState();
     setIsProcessing(true);
     setCurrentStatus('Initiating deployment...');
     setLogs([{ type: 'status', payload: 'Initiating deployment...', timestamp: new Date() }]);
@@ -132,7 +132,7 @@ export function UploadCard() {
       if (initialResponse.success && initialResponse.deploymentId) {
         setCurrentStatus('Deployment in progress, connecting to stream...');
         setLogs(prev => [...prev, { type: 'status', payload: `Connecting to stream (ID: ${initialResponse.deploymentId})...`, timestamp: new Date() }]);
-        
+
         eventSourceRef.current = new EventSource(`/api/deploy-stream/${initialResponse.deploymentId}`);
         const es = eventSourceRef.current;
 
@@ -152,7 +152,7 @@ export function UploadCard() {
           setCurrentStatus(statusData);
           // setLogs(prev => [...prev, { type: 'status', payload: statusData, timestamp: new Date() }]);
         });
-        
+
         es.addEventListener('complete', (e) => {
           // console.log("[CLIENT] 'complete' event received.");
           const resultData: DeploymentCompletionPayload = JSON.parse(e.data);
@@ -164,44 +164,81 @@ export function UploadCard() {
             description: resultData.message,
             variant: resultData.success ? "default" : "destructive",
           });
-          cleanupEventSource(); 
+          cleanupEventSource();
           setIsProcessing(false);
         });
 
-        es.addEventListener('error', (e: MessageEvent) => { 
-          // console.log("[CLIENT] SSE 'error' event received:", e.data);
-          let errorMessage = "An error occurred with the deployment stream.";
-           try {
-            if (e.data) {
-                const errorData = JSON.parse(e.data); 
-                if (errorData && errorData.message) errorMessage = errorData.message;
+        es.addEventListener('error', (e: MessageEvent) => {
+          console.log("[CLIENT] SSE 'error' event received. Raw data:", e.data, "Type of e.data:", typeof e.data);
+          let errorMessage = "An error occurred with the deployment stream."; // Default message
+          let specificErrorFromServer = "";
+
+          if (e.data && typeof e.data === 'string' && e.data.trim() !== "") {
+            try {
+              const errorData = JSON.parse(e.data);
+              console.log("[CLIENT] Parsed errorData from JSON string:", errorData);
+              if (errorData && errorData.message && typeof errorData.message === 'string') {
+                specificErrorFromServer = errorData.message;
+                errorMessage = errorData.message;
+                console.log("[CLIENT] Using specific server error from JSON:", errorMessage);
+              } else {
+                console.warn("[CLIENT] SSE 'error' event JSON data did not contain a 'message' string field. Parsed data:", errorData, ". Raw data:", e.data);
+                specificErrorFromServer = e.data; 
+                errorMessage = e.data; 
+              }
+            } catch (parseError: any) {
+              console.warn("[CLIENT] Could not parse SSE 'error' event data as JSON. Raw data:", e.data, ". Parse error:", parseError.message);
+              specificErrorFromServer = e.data;
+              errorMessage = e.data;
             }
-          } catch (parseError) { 
-            // console.warn("[CLIENT] Could not parse error event data:", parseError);
+          } else if (e.data) {
+             console.warn("[CLIENT] SSE 'error' event received with non-string or empty string data. Converting to string. Raw data:", e.data);
+             specificErrorFromServer = String(e.data);
+             errorMessage = String(e.data);
+          } else {
+            console.warn("[CLIENT] SSE 'error' event received with no data (null or undefined).");
           }
 
-          setLogs(prev => [...prev, { type: 'error', payload: `Stream Error: ${errorMessage}`, timestamp: new Date() }]);
-          setCurrentStatus('Stream error or deployment issue.');
-          toast({ title: "Stream Error", description: errorMessage, variant: "destructive" });
-          if (!finalResult) { 
-            setFinalResult({ success: false, message: errorMessage, error: errorMessage });
+          // Sanitize errorMessage
+          if (typeof errorMessage !== 'string') { // Ensure errorMessage is a string
+            errorMessage = "Received non-string error data from server.";
           }
-          cleanupEventSource(); 
-          setIsProcessing(false); 
+          if (errorMessage.length > 250) { 
+            errorMessage = errorMessage.substring(0, 247) + "...";
+          }
+          if (errorMessage.startsWith("[object") && errorMessage.endsWith("]")) {
+             errorMessage = "Received complex object as error data from server.";
+          }
+          if (errorMessage.trim() === "") {
+             errorMessage = "Received empty error message from server.";
+          }
+          
+          console.log("[CLIENT] Final error message for UI:", errorMessage);
+          // console.log("[CLIENT] Specific error from server (for internal state):", specificErrorFromServer);
+
+          setLogs(prev => [...prev, { type: 'error', payload: `Stream Error: ${errorMessage}`, timestamp: new Date() }]);
+          setCurrentStatus(`Error: ${errorMessage.substring(0,60)}...`);
+          toast({ title: "Stream Error", description: errorMessage, variant: "destructive" });
+
+          if (!finalResult) {
+            setFinalResult({ success: false, message: errorMessage, error: specificErrorFromServer || "An error occurred with the deployment stream." });
+          }
+          cleanupEventSource();
+          setIsProcessing(false);
         });
 
         // es.onerror for generic network/connection failures of the EventSource itself
-        es.onerror = (errorEvent) => { 
+        es.onerror = (errorEvent) => {
           console.error("[CLIENT] EventSource generic error (es.onerror):", errorEvent);
           // Check if already handled by 'complete' or specific 'error' event
-          if (eventSourceRef.current && !finalResult) {
+          if (eventSourceRef.current && !finalResult) { // Check eventSourceRef.current to ensure it's our ES
             const genericErrorMsg = 'Connection to deployment stream lost or server error.';
             setLogs(prev => [...prev, { type: 'error', payload: genericErrorMsg, timestamp: new Date() }]);
             setCurrentStatus('Stream connection failed.');
             toast({ title: "Connection Error", description: genericErrorMsg, variant: "destructive" });
-            setFinalResult({ success: false, message: genericErrorMsg });
+            setFinalResult({ success: false, message: genericErrorMsg, error: genericErrorMsg });
           }
-          cleanupEventSource(); 
+          cleanupEventSource();
           setIsProcessing(false);
         };
 
@@ -210,7 +247,7 @@ export function UploadCard() {
         setCurrentStatus('Failed to initiate deployment.');
         setLogs(prev => [...prev, { type: 'error', payload: message, timestamp: new Date() }]);
         toast({ title: "Initiation Failed", description: message, variant: "destructive" });
-        setFinalResult({ success: false, message: message });
+        setFinalResult({ success: false, message: message, error: message });
         setIsProcessing(false);
       }
     } catch (error) {
@@ -218,9 +255,9 @@ export function UploadCard() {
       setCurrentStatus(`Initiation critically failed.`);
       setLogs(prev => [...prev, { type: 'error', payload: `Critical Error: ${errorMessage}`, timestamp: new Date() }]);
       toast({ title: "Deployment Initiation Critical Error", description: errorMessage, variant: "destructive" });
-      setFinalResult({ success: false, message: errorMessage });
-      setIsProcessing(false); 
-      cleanupEventSource(); 
+      setFinalResult({ success: false, message: errorMessage, error: errorMessage });
+      setIsProcessing(false);
+      cleanupEventSource();
       console.error("[CLIENT] handleSubmit critical error (calling deployProject action):", error);
     }
   };
@@ -278,7 +315,7 @@ export function UploadCard() {
             </h3>
             <p className="text-md mb-3 font-medium">
               Status: <span className={`${finalResult && !finalResult.success ? 'text-destructive' : 'text-primary'} font-semibold`}>
-                {isProcessing && !finalResult ? currentStatus : (finalResult?.success ? "Deployment Successful" : (finalResult?.message || currentStatus))}
+                {currentStatus}
               </span>
             </p>
             {isProcessing && !finalResult && <Loader2 className="my-2 h-6 w-6 animate-spin text-primary" />}
@@ -289,9 +326,9 @@ export function UploadCard() {
                     [{logItem.timestamp.toLocaleTimeString()}]
                   </span>
                   <span className={
-                    logItem.type === 'error' ? 'text-destructive' : 
+                    logItem.type === 'error' ? 'text-destructive' :
                     logItem.type === 'complete_event' && logItem.payload.success === false ? 'text-destructive' :
-                    logItem.type === 'status' ? 'text-primary font-semibold' : 
+                    logItem.type === 'status' ? 'text-primary font-semibold' :
                     'text-foreground/80'
                   }>
                     {logItem.type === 'complete_event' ? `Event: ${logItem.payload.success ? 'Success' : 'Failure'} - ${logItem.payload.message}` : String(logItem.payload)}
@@ -302,7 +339,7 @@ export function UploadCard() {
             </ScrollArea>
           </div>
         )}
-        
+
         {finalResult && (
            <div className="mt-8 p-6 bg-card rounded-lg shadow border">
             <div className="flex items-center mb-4">
