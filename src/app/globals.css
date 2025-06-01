@@ -2,79 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  font-family: Arial, Helvetica, sans-serif;
-}
+/* Removed redundant body font-family, as it's handled by layout.tsx and tailwind.config.ts */
 
 @layer base {
   :root {
-    --background: 0 0% 100%; /* White */
-    --foreground: 0 0% 0%; /* Black */
-    --card: 0 0% 100%; /* White */
-    --card-foreground: 0 0% 0%; /* Black */
-    --popover: 0 0% 100%; /* White */
-    --popover-foreground: 0 0% 0%; /* Black */
-    --primary: 0 0% 13%; /* Very Dark Gray (Near Black) */
-    --primary-foreground: 0 0% 100%; /* White */
-    --secondary: 0 0% 94%; /* Light Gray */
-    --secondary-foreground: 0 0% 13%; /* Very Dark Gray */
-    --muted: 0 0% 96.1%; /* Very Light Gray */
-    --muted-foreground: 0 0% 45.1%; /* Mid Gray */
-    --accent: 0 0% 90%; /* Light Gray (e.g., for hovers) */
-    --accent-foreground: 0 0% 13%; /* Very Dark Gray */
-    --destructive: 0 84.2% 60.2%; /* Default Red */
-    --destructive-foreground: 0 0% 98%; /* White */
-    --border: 0 0% 89.8%; /* Light Gray */
-    --input: 0 0% 89.8%; /* Light Gray */
-    --ring: 0 0% 13%; /* Very Dark Gray */
-    
-    --chart-1: 0 0% 20%;
-    --chart-2: 0 0% 35%;
-    --chart-3: 0 0% 50%;
-    --chart-4: 0 0% 65%;
-    --chart-5: 0 0% 80%;
-
-    --radius: 0.5rem;
-
-    /* Sidebar specific vars - ensure they align with B&W */
-    --sidebar-background: 0 0% 98%; /* Light gray, almost white */
-    --sidebar-foreground: 0 0% 13%; /* Dark Gray */
-    --sidebar-primary: 0 0% 13%; /* Dark Gray */
-    --sidebar-primary-foreground: 0 0% 98%; /* White */
-    --sidebar-accent: 0 0% 90%; /* Light Gray */
-    --sidebar-accent-foreground: 0 0% 13%; /* Dark Gray */
-    --sidebar-border: 0 0% 85%; /* Light Gray */
-    --sidebar-ring: 0 0% 13%; /* Dark Gray */
-  }
-
-  .dark {
+    /* Default theme is now dark, matching the .dark variables for a consistent black & white experience */
     --background: 0 0% 3.9%; /* Near Black */
     --foreground: 0 0% 98%; /* Near White */
+    
     --card: 0 0% 7%; /* Darker Gray for cards */
     --card-foreground: 0 0% 98%; /* Near White */
+    
     --popover: 0 0% 7%; /* Darker Gray for popovers */
     --popover-foreground: 0 0% 98%; /* Near White */
-    --primary: 0 0% 90%; /* Very Light Gray (Near White) */
-    --primary-foreground: 0 0% 3.9%; /* Near Black */
+    
+    --primary: 0 0% 90%; /* Very Light Gray (Near White for primary elements on dark bg) */
+    --primary-foreground: 0 0% 3.9%; /* Near Black (for text on primary elements) */
+    
     --secondary: 0 0% 14.9%; /* Dark Gray */
     --secondary-foreground: 0 0% 90%; /* Very Light Gray */
+    
     --muted: 0 0% 14.9%; /* Dark Gray */
     --muted-foreground: 0 0% 63.9%; /* Mid-Light Gray */
+    
     --accent: 0 0% 20%; /* Dark Gray (e.g., for hovers) */
     --accent-foreground: 0 0% 98%; /* Near White */
+    
     --destructive: 0 72.2% 50.6%; /* Default Red (adjusted for dark) */
     --destructive-foreground: 0 0% 98%; /* White */
+    
     --border: 0 0% 14.9%; /* Dark Gray */
     --input: 0 0% 14.9%; /* Dark Gray */
-    --ring: 0 0% 90%; /* Very Light Gray */
-
+    --ring: 0 0% 90%; /* Very Light Gray for focus rings */
+    
     --chart-1: 0 0% 80%;
     --chart-2: 0 0% 65%;
     --chart-3: 0 0% 50%;
     --chart-4: 0 0% 35%;
     --chart-5: 0 0% 20%;
 
-    /* Sidebar specific vars - ensure they align with B&W for dark mode */
+    --radius: 0.5rem;
+
+    /* Sidebar specific vars - ensure they align with the dark theme */
     --sidebar-background: 0 0% 5.9%; /* Dark Gray */
     --sidebar-foreground: 0 0% 90%; /* Light Gray */
     --sidebar-primary: 0 0% 90%; /* Light Gray */
@@ -84,6 +53,44 @@ body {
     --sidebar-border: 0 0% 15.9%; /* Darker Gray */
     --sidebar-ring: 0 0% 90%; /* Light Gray */
   }
+
+  .dark {
+    /* .dark theme variables remain, ensuring consistency if .dark class is ever explicitly applied */
+    --background: 0 0% 3.9%; 
+    --foreground: 0 0% 98%; 
+    --card: 0 0% 7%; 
+    --card-foreground: 0 0% 98%; 
+    --popover: 0 0% 7%; 
+    --popover-foreground: 0 0% 98%; 
+    --primary: 0 0% 90%; 
+    --primary-foreground: 0 0% 3.9%; 
+    --secondary: 0 0% 14.9%; 
+    --secondary-foreground: 0 0% 90%; 
+    --muted: 0 0% 14.9%; 
+    --muted-foreground: 0 0% 63.9%; 
+    --accent: 0 0% 20%; 
+    --accent-foreground: 0 0% 98%; 
+    --destructive: 0 72.2% 50.6%; 
+    --destructive-foreground: 0 0% 98%; 
+    --border: 0 0% 14.9%; 
+    --input: 0 0% 14.9%; 
+    --ring: 0 0% 90%; 
+
+    --chart-1: 0 0% 80%;
+    --chart-2: 0 0% 65%;
+    --chart-3: 0 0% 50%;
+    --chart-4: 0 0% 35%;
+    --chart-5: 0 0% 20%;
+
+    --sidebar-background: 0 0% 5.9%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 0 0% 90%;
+    --sidebar-primary-foreground: 0 0% 5.9%;
+    --sidebar-accent: 0 0% 15.9%;
+    --sidebar-accent-foreground: 0 0% 90%;
+    --sidebar-border: 0 0% 15.9%;
+    --sidebar-ring: 0 0% 90%;
+  }
 }
 
 @layer base {
@@ -91,6 +98,6 @@ body {
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground; /* Ensures body always uses the theme background/foreground */
   }
 }

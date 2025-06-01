@@ -1,12 +1,10 @@
 // src/app/layout.tsx
-'use client'; // Required for usePathname
+'use client'; // Required for AuthProvider and Toaster hooks if they use client features
 
-import type { Metadata } from 'next';
-import { usePathname } from 'next/navigation'; // Import usePathname
+// import type { Metadata } from 'next'; // Metadata often better in page.tsx for client components
 import './globals.css';
-import { Toaster } from '../components/ui/toaster'; // Changed from @/components/ui/toaster
-import { AuthProvider } from '../contexts/AuthContext'; // Changed from @/contexts/AuthContext
-import { Navbar } from '../components/Navbar'; // Changed from @/components/Navbar
+import { Toaster } from '../components/ui/toaster';
+import { AuthProvider } from '../contexts/AuthContext';
 
 // Metadata can't be dynamic in a client component root layout easily,
 // so we define it statically. If dynamic metadata is needed per page,
@@ -21,8 +19,7 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const pathname = usePathname();
-  const showNavbar = pathname !== '/'; // Hide Navbar on the new home/login page
+  // Navbar and its related logic (pathname, showNavbar) have been removed
 
   return (
     <html lang="en">
@@ -32,11 +29,12 @@ export default function RootLayout({
         <meta name="description" content="Effortless deployment for your React and static web projects." />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        {/* Updated to include 400, 700, 900 weights for Inter font */}
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet" />
       </head>
       <body className="font-body antialiased bg-background text-foreground">
         <AuthProvider>
-          {showNavbar && <Navbar />}
+          {/* Navbar has been removed */}
           <main>{children}</main>
           <Toaster />
         </AuthProvider>
