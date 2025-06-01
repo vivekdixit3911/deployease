@@ -37,27 +37,39 @@ const prompt = ai.definePrompt({
   output: {schema: DetectFrameworkOutputSchema},
   prompt: `You are an expert software development framework detector.
 Your task is to determine if the provided file content indicates a React-based project or a static HTML/CSS/JS website.
+The input 'fileContents' will typically be the content of a 'package.json' file or an 'index.html' file.
 
-Input will typically be the content of a 'package.json' file or an 'index.html' file.
+**Analysis based on 'package.json' (Highest Priority):**
+If 'fileContents' is from a 'package.json':
+1.  **Dependencies:** Look for "react" AND "react-dom" in "dependencies" or "devDependencies". Their presence is a very strong indicator of a React project.
+2.  **Build Tools/Scripts:**
+    *   Look for packages like "next", "react-scripts", "vite", "@remix-run/dev", or "parcel-bundler" (if configured for React) in dependencies or devDependencies.
+    *   Examine the "scripts" section for commands like:
+        *   "start": "react-scripts start", "build": "react-scripts build"
+        *   "dev": "next dev", "build": "next build"
+        *   "dev": "vite", "build": "vite build" (especially if React plugins are used with Vite)
+        *   "dev": "remix dev", "build": "remix build"
+    *   The presence of such scripts strongly suggests a "react" project.
+3.  If "react" AND "react-dom" are present in dependencies/devDependencies, OR if common React-specific build scripts (like those mentioned above) are found, classify as "react" with high confidence (e.g., 0.9 or higher). Even if only one of these strong signals is present, lean towards "react".
 
-Criteria for "react":
-- If 'fileContents' is from a 'package.json':
-  - Look for "react" and "react-dom" in dependencies or devDependencies.
-  - Look for packages like "next", "react-scripts", "vite" (especially if its config implies React usage).
-  - Look for scripts in 'package.json' like "start": "react-scripts start", "build": "react-scripts build", "dev": "next dev", "build": "next build", or similar Vite/Parcel build commands for React.
-- If 'fileContents' is from an 'index.html' AND no 'package.json' was likely available for analysis:
-  - It's less likely to be a complex React *build* project. Consider it "static" unless there are very clear script tags importing React from a CDN for a simple embed. However, prioritize 'package.json' indicators if available. If the index.html contains a common React root div like <div id="root"></div> or <div id="app"></div>, it might be a React project, but 'package.json' is a stronger signal.
+**Analysis based on 'index.html' (Fallback if no 'package.json' was suitable for analysis):**
+If 'fileContents' is from an 'index.html' AND no 'package.json' with React indicators was provided or analyzed:
+1.  An 'index.html' alone usually means a "static" site.
+2.  If it contains script tags importing React from a CDN (e.g., <script src=".../react.development.js"></script> and <script src=".../react-dom.development.js"></script>) AND a root div (e.g., <div id="root"></div> or <div id="app"></div>), it *might* be a simple React setup. If no 'package.json' was available for analysis, and these specific CDN and root div patterns are seen, you can classify as "react" but with moderate confidence (e.g., 0.6-0.7).
+3.  Otherwise, if it's a standard complete HTML page without clear React CDN usage, classify as "static" with high confidence.
 
-Criteria for "static":
-- If 'fileContents' is from an 'index.html' and does not show clear signs of being a placeholder for a React app (e.g., it's a complete HTML page, and no 'package.json' with React indicators was provided).
-- If 'fileContents' is from a 'package.json' but lacks strong React indicators (e.g., no "react" in dependencies, no common React build scripts).
+**Default/Uncertainty:**
+If 'fileContents' is from a 'package.json' but lacks clear React indicators (no "react"/"react-dom" in dependencies, no typical React build scripts), classify as "static".
+If no 'package.json' was available for analysis and the 'index.html' does not clearly indicate React via CDN usage as described above, classify as "static".
 
 Output "react" if it's a React project.
 Output "static" if it's a static website.
-Also, output a confidence level between 0 and 1. A higher confidence should be given if 'package.json' clearly indicates React.
+Provide a confidence level between 0 and 1 for your detection.
 
-File Contents:
+File Contents to analyze:
+\`\`\`
 {{{fileContents}}}
+\`\`\`
 `,
 });
 
@@ -72,4 +84,3 @@ const detectFrameworkFlow = ai.defineFlow(
     return output!;
   }
 );
-
