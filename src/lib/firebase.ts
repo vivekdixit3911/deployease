@@ -1,42 +1,39 @@
+// This file is intentionally left blank or can be removed if Firebase is no longer used.
+// If other Firebase services (like Genkit AI which might use Firebase Auth or other Google Cloud services)
+// are still in use, this file might be needed for Firebase App initialization without Storage.
 
-// src/lib/firebase.ts
+// For now, we assume Firebase (client-side app, storage, analytics) is fully replaced for this app's core functionality.
+// If you re-add Firebase services, you'll need to configure initialization here.
+// Example for just Firebase App initialization (if needed by other Firebase SDKs):
+/*
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
-import { getStorage, FirebaseStorage } from 'firebase/storage';
-import { getAnalytics, Analytics } from "firebase/analytics";
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyBlzmOXM8QzXrT-kWdSNH2jmKtcxuk7Y1c",
-  authDomain: "deeps-e3fe9.firebaseapp.com",
-  projectId: "deeps-e3fe9",
-  storageBucket: "deeps-e3fe9.appspot.com", // Ensure this is the correct bucket name (usually project-id.appspot.com)
-  messagingSenderId: "575487461961",
-  appId: "1:575487461961:web:6e7375597a671da4ed4d98",
-  measurementId: "G-F37LTB2835"
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  // storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET, // No longer used here
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID, // Optional
 };
 
 let app: FirebaseApp;
-let analytics: Analytics | undefined;
 
 if (!getApps().length) {
-  app = initializeApp(firebaseConfig);
-  // Check if window is defined (i.e., we are on the client-side) before initializing Analytics
-  if (typeof window !== 'undefined') {
-    analytics = getAnalytics(app);
+  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    console.warn("Firebase config (apiKey or projectId) is missing. Firebase App not initialized.");
+    // Provide a dummy app or handle this state as appropriate if Firebase is critical elsewhere
   }
 } else {
   app = getApps()[0];
-  // If app already initialized, try to get analytics instance if on client
-  if (typeof window !== 'undefined') {
-    try {
-        analytics = getAnalytics(app);
-    } catch (e) {
-        console.warn("Could not initialize Firebase Analytics on subsequent app instance:", e);
-    }
-  }
 }
 
-const storage: FirebaseStorage = getStorage(app);
+// export { app }; // Export if needed
+*/
 
-export { app, storage, analytics };
+// Since no Firebase services are explicitly used by the modified code,
+// this file can be deleted if no other part of your application imports from it.
+// I am leaving it blank to signify its removal from active use.

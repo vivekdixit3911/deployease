@@ -7,11 +7,12 @@ import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import JSZip from 'jszip';
-import { TEMP_UPLOAD_DIR } from '@/config/constants'; // SITES_DIR is no longer used here
+import mime from 'mime-types';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { s3Client, OLA_S3_BUCKET_NAME } from '@/lib/s3Client';
+import { TEMP_UPLOAD_DIR } from '@/config/constants';
 import { suggestProjectName } from '@/ai/flows/suggest-project-name';
 import { detectFramework } from '@/ai/flows/detect-framework';
-import { storage as firebaseStorage } from '@/lib/firebase'; // Firebase storage instance
-import { ref as firebaseStorageRef, uploadBytes } from 'firebase/storage'; // Removed uploadString as it's not used
 
 const execAsync = promisify(exec);
 
@@ -33,28 +34,39 @@ async function ensureDirectoryExists(dirPath: string) {
   }
 }
 
-// Helper function to recursively upload a directory to Firebase Storage
-async function uploadDirectoryRecursive(
-  fbStorage: typeof firebaseStorage, // Explicit type
+async function uploadDirectoryRecursiveS3(
   localDirPath: string,
-  storageDirPath: string,
+  s3BaseKey: string, // e.g., "sites/my-project"
   logsRef: { value: string }
 ) {
+  if (!OLA_S3_BUCKET_NAME) {
+    logsRef.value += 'Error: OLA_S3_BUCKET_NAME is not configured.\n';
+    throw new Error('OLA_S3_BUCKET_NAME is not configured.');
+  }
+  const currentS3Client = s3Client(); // Get S3 client instance
+
   const entries = await fs.readdir(localDirPath, { withFileTypes: true });
   for (const entry of entries) {
     const localEntryPath = path.join(localDirPath, entry.name);
-    // Ensure storageEntryPath doesn't have leading/trailing slashes issues from entry.name
     const cleanEntryName = entry.name.replace(/^\/+|\/+$/g, '');
-    const storageEntryPath = `${storageDirPath}/${cleanEntryName}`;
-    
+    const s3ObjectKey = `${s3BaseKey}/${cleanEntryName}`.replace(/^\/+/, ''); // Ensure no leading slash
+
     if (entry.isDirectory()) {
-      await uploadDirectoryRecursive(fbStorage, localEntryPath, storageEntryPath, logsRef);
+      await uploadDirectoryRecursiveS3(localEntryPath, s3ObjectKey, logsRef);
     } else {
-      logsRef.value += `Uploading ${localEntryPath} to ${storageEntryPath}...\n`;
+      logsRef.value += `Uploading ${localEntryPath} to S3: s3://${OLA_S3_BUCKET_NAME}/${s3ObjectKey}...\n`;
       const fileBuffer = await fs.readFile(localEntryPath);
-      const fileRef = firebaseStorageRef(fbStorage, storageEntryPath);
-      await uploadBytes(fileRef, fileBuffer);
-      logsRef.value += `Uploaded ${localEntryPath} to ${storageEntryPath} successfully.\n`;
+      const contentType = mime.lookup(entry.name) || 'application/octet-stream';
+
+      const command = new PutObjectCommand({
+        Bucket: OLA_S3_BUCKET_NAME,
+        Key: s3ObjectKey,
+        Body: fileBuffer,
+        ContentType: contentType,
+        // ACL: 'public-read', // Uncomment if objects should be public by default and your provider supports it
+      });
+      await currentS3Client.send(command);
+      logsRef.value += `Uploaded ${localEntryPath} to s3://${OLA_S3_BUCKET_NAME}/${s3ObjectKey} successfully.\n`;
     }
   }
 }
@@ -72,18 +84,24 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   }
 
   let tempZipPath = '';
-  let extractionPath = ''; // Temp local extraction path
+  let extractionPath = '';
   let finalProjectName = 'untitled-project';
   let detectedFramework = 'unknown';
   
-  const logsRef = { value: '' }; // Pass by reference for helper
+  const logsRef = { value: '' };
 
   try {
+    if (!OLA_S3_BUCKET_NAME) {
+        logsRef.value += 'Error: S3 bucket name is not configured in environment variables.\n';
+        throw new Error('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
+    }
+    s3Client(); // Initialize client early to catch config errors
+
     await ensureDirectoryExists(TEMP_UPLOAD_DIR);
     
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     tempZipPath = path.join(TEMP_UPLOAD_DIR, `${uniqueId}-${file.name}`);
-    extractionPath = path.join(TEMP_UPLOAD_DIR, uniqueId, 'extracted'); // This is where files are extracted locally
+    extractionPath = path.join(TEMP_UPLOAD_DIR, uniqueId, 'extracted');
     await ensureDirectoryExists(extractionPath);
 
     logsRef.value += `Uploading file: ${file.name}\n`;
@@ -93,10 +111,9 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
     logsRef.value += `Extracting ZIP file to temporary local directory ${extractionPath}...\n`;
     const zip = await JSZip.loadAsync(fileBuffer);
-    const fileNames: string[] = []; // Relative paths within the zip
+    const fileNames: string[] = [];
     let packageJsonContent: string | null = null;
 
-    // Extract all files locally first for inspection and build process
     for (const relativePathInZip in zip.files) {
       const zipEntry = zip.files[relativePathInZip];
       const localDestPath = path.join(extractionPath, relativePathInZip);
@@ -121,7 +138,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     logsRef.value += `Suggesting project name...\n`;
     try {
       const nameSuggestion = await suggestProjectName({ fileNames });
-      finalProjectName = nameSuggestion.projectName.replace(/\s+/g, '-').toLowerCase();
+      finalProjectName = nameSuggestion.projectName.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase(); // Sanitize name
       logsRef.value += `Suggested project name: ${finalProjectName}\n`;
     } catch (aiError) {
       logsRef.value += `AI project name suggestion failed: ${(aiError as Error).message}. Using default name.\n`;
@@ -153,7 +170,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       detectedFramework = 'static';
     }
 
-    const storageRootPath = `sites/${finalProjectName}`;
+    const s3ProjectBaseKey = `sites/${finalProjectName}`; // Base S3 key for this project
 
     if (detectedFramework === 'react') {
       logsRef.value += `React project detected. Starting build process in ${extractionPath}...\n`;
@@ -168,17 +185,17 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         logsRef.value += `npm run build stdout: ${buildOutput.stdout}\n`;
         if (buildOutput.stderr) logsRef.value += `npm run build stderr: ${buildOutput.stderr}\n`;
 
-        const buildDirs = ['build', 'dist', 'out']; // Common build output directories
-        let buildSourcePath = ''; // Local path to build output
+        const buildDirs = ['build', 'dist', 'out'];
+        let buildSourcePath = '';
         for (const dir of buildDirs) {
           const potentialPath = path.join(extractionPath, dir);
           try {
-            await fs.access(potentialPath); // Check if dir exists
+            await fs.access(potentialPath);
              if ((await fs.stat(potentialPath)).isDirectory()) {
                 buildSourcePath = potentialPath;
                 break;
             }
-          } catch { /* Directory does not exist or not accessible */ }
+          } catch { /* Directory does not exist */ }
         }
 
         if (!buildSourcePath) {
@@ -186,9 +203,9 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           throw new Error('Build output directory not found.');
         }
         
-        logsRef.value += `Uploading build files from ${buildSourcePath} to Firebase Storage at ${storageRootPath}...\n`;
-        await uploadDirectoryRecursive(firebaseStorage, buildSourcePath, storageRootPath, logsRef);
-        logsRef.value += `Build files uploaded successfully to Firebase Storage.\n`;
+        logsRef.value += `Uploading build files from ${buildSourcePath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
+        await uploadDirectoryRecursiveS3(buildSourcePath, s3ProjectBaseKey, logsRef);
+        logsRef.value += `Build files uploaded successfully to S3.\n`;
 
       } catch (buildError: any) {
         logsRef.value += `Build process failed: ${buildError.message}\n`;
@@ -197,19 +214,17 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         return { success: false, message: `Build process failed: ${buildError.message}`, logs: logsRef.value };
       }
     } else { // Static site
-      logsRef.value += `Static site detected. Uploading files from ${extractionPath} to Firebase Storage at ${storageRootPath}...\n`;
-      // For static sites, upload the contents of extractionPath directly
-      await uploadDirectoryRecursive(firebaseStorage, extractionPath, storageRootPath, logsRef);
-      logsRef.value += `Static files uploaded successfully to Firebase Storage.\n`;
+      logsRef.value += `Static site detected. Uploading files from ${extractionPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
+      await uploadDirectoryRecursiveS3(extractionPath, s3ProjectBaseKey, logsRef);
+      logsRef.value += `Static files uploaded successfully to S3.\n`;
     }
 
-    // The deployedUrl will be handled by the new proxy route /sites/...
     const deployedUrl = `/sites/${finalProjectName}`; 
     logsRef.value += `Deployment successful. Access at: ${deployedUrl}\n`;
 
     return {
       success: true,
-      message: 'Project deployed successfully to Firebase Storage!',
+      message: 'Project deployed successfully to S3-compatible storage!',
       projectName: finalProjectName,
       framework: detectedFramework,
       deployedUrl,
@@ -218,35 +233,26 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
   } catch (error: any) {
     let detailedErrorMessage = error.message;
-    if (error.code) { // FirebaseError often has a code
-        detailedErrorMessage = `Firebase Storage Error (${error.code}): ${error.message}`;
+    if (error.name) { // AWS SDK errors often have a name
+        detailedErrorMessage = `S3 Storage Error (${error.name}): ${error.message}`;
     }
-    // Attempt to get more info from serverResponse, which might exist on Firebase Storage errors
-    // The actual structure of serverResponse can vary.
-    if (error.serverResponse) {
-        detailedErrorMessage += `\nServer Response: ${typeof error.serverResponse === 'string' ? error.serverResponse : JSON.stringify(error.serverResponse)}`;
-    } else if (error.customData && error.customData.serverResponse) { // Sometimes nested
-        detailedErrorMessage += `\nServer Response (customData): ${typeof error.customData.serverResponse === 'string' ? error.customData.serverResponse : JSON.stringify(error.customData.serverResponse)}`;
+    if (error.$metadata && error.$metadata.httpStatusCode) {
+        detailedErrorMessage += ` (HTTP Status: ${error.$metadata.httpStatusCode})`;
     }
-
-
+    
     logsRef.value += `An error occurred: ${detailedErrorMessage}\nStack: ${error.stack || 'N/A'}\n`;
     console.error('Detailed Deployment error:', detailedErrorMessage, 'Full error object:', error);
     
     return { 
         success: false, 
-        message: `Deployment failed. ${detailedErrorMessage}`, // Return the more detailed message
+        message: `Deployment failed. ${detailedErrorMessage}`,
         logs: logsRef.value 
     };
   } finally {
-    // Clean up temporary local files
     if (tempZipPath) {
       fs.unlink(tempZipPath).catch(err => console.error(`Failed to delete temp zip: ${tempZipPath}`, err));
     }
-    // Clean up the entire uniqueId extraction directory
     if (extractionPath && extractionPath.startsWith(TEMP_UPLOAD_DIR) && extractionPath !== TEMP_UPLOAD_DIR) {
-        // extractionPath is .../tmp/project_uploads/uniqueId/extracted
-        // We want to delete .../tmp/project_uploads/uniqueId
         const dirToDelete = path.dirname(extractionPath); 
          if (dirToDelete && dirToDelete.startsWith(TEMP_UPLOAD_DIR) && dirToDelete !== TEMP_UPLOAD_DIR) {
              fs.rm(dirToDelete, { recursive: true, force: true })
@@ -255,5 +261,3 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
   }
 }
-
-    

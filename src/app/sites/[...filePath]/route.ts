@@ -1,36 +1,66 @@
 
 // src/app/sites/[...filePath]/route.ts
 import { type NextRequest, NextResponse } from 'next/server';
-import { storage } from '@/lib/firebase';
-import { ref, getBlob, getMetadata } from 'firebase/storage';
-import path from 'path'; // For path.extname
+import { s3Client, OLA_S3_BUCKET_NAME } from '@/lib/s3Client';
+import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import pathUtil from 'path'; // For pathUtil.extname, renamed to avoid conflict
 
-async function tryServePath(storagePathToTry: string): Promise<NextResponse | null> {
+async function tryServePathFromS3(s3KeyToTry: string): Promise<NextResponse | null> {
+  if (!OLA_S3_BUCKET_NAME) {
+    console.error("S3 Bucket name not configured for serving files.");
+    // Throw an error that will be caught by the main try-catch and result in a 500
+    throw new Error("S3_BUCKET_NAME_NOT_CONFIGURED"); 
+  }
+  const currentS3Client = s3Client();
+
   try {
-    const fileRef = ref(storage, storagePathToTry);
-    // Must get metadata first to check existence and content type before blob
-    const metadata = await getMetadata(fileRef); 
-    const blob = await getBlob(fileRef);
-    
-    const contentType = metadata.contentType || 'application/octet-stream';
-    const cacheControl = metadata.cacheControl || 'public, max-age=3600'; // Default cache
+    const getObjectParams = {
+      Bucket: OLA_S3_BUCKET_NAME,
+      Key: s3KeyToTry,
+    };
 
-    return new NextResponse(blob, {
+    let s3Metadata;
+    try {
+      const headCommand = new HeadObjectCommand(getObjectParams);
+      s3Metadata = await currentS3Client.send(headCommand);
+    } catch (headError: any) {
+      // Common S3 error names for object not found
+      if (headError.name === 'NoSuchKey' || headError.name === 'NotFound' || (headError.$metadata && headError.$metadata.httpStatusCode === 404)) {
+        return null; // File not found
+      }
+      console.error(`S3 HeadObject error for '${s3KeyToTry}':`, headError.name, headError.message);
+      throw headError; // Other head error, let main handler deal with it
+    }
+    
+    // If HeadObject was successful, proceed to GetObject
+    const command = new GetObjectCommand(getObjectParams);
+    const s3ObjectOutput = await currentS3Client.send(command);
+
+    if (!s3ObjectOutput.Body) {
+      console.error(`S3 object body is empty for key: ${s3KeyToTry}`);
+      return NextResponse.json({ error: 'S3 object body is empty.' }, { status: 500 });
+    }
+
+    const contentType = s3Metadata.ContentType || s3ObjectOutput.ContentType || 'application/octet-stream';
+    const contentLength = s3Metadata.ContentLength?.toString() || s3ObjectOutput.ContentLength?.toString();
+    const cacheControl = s3Metadata.CacheControl || s3ObjectOutput.CacheControl || 'public, max-age=3600'; // Default cache
+
+    return new NextResponse(s3ObjectOutput.Body as any, { // Cast to any for ReadableStream
       status: 200,
       headers: {
         'Content-Type': contentType,
-        'Content-Length': blob.size.toString(),
+        ...(contentLength && { 'Content-Length': contentLength }),
         'Cache-Control': cacheControl,
       },
     });
+
   } catch (error: any) {
-    if (error.code === 'storage/object-not-found') {
-      return null; // File not found, return null to indicate this
+    // Double check for not found errors that might not have been caught by HeadObject phase
+    if (error.name === 'NoSuchKey' || error.name === 'NotFound' || (error.$metadata && error.$metadata.httpStatusCode === 404)) {
+      return null; // File not found
     }
-    // For other errors, log and rethrow or return a 500
-    console.error(`Error fetching '${storagePathToTry}' from Firebase Storage:`, error);
-    // Rethrow to be caught by the main try-catch
-    throw error; 
+    console.error(`Error fetching '${s3KeyToTry}' from S3:`, error.name, error.message, error);
+    throw error; // Rethrow to be caught by the main try-catch
   }
 }
 
@@ -43,55 +73,65 @@ export async function GET(
   if (!filePathArray || filePathArray.length === 0) {
     return NextResponse.json({ error: 'Project name is required.' }, { status: 400 });
   }
+  
+  try {
+    s3Client(); // Initialize client early to catch config errors
+    if (!OLA_S3_BUCKET_NAME) {
+      throw new Error("S3 bucket (OLA_S3_BUCKET_NAME) is not configured in environment variables.");
+    }
+  } catch (configError: any) {
+     console.error('S3 Configuration error:', configError.message);
+     return NextResponse.json({ error: 'Server configuration error for S3 storage.', details: configError.message }, { status: 500 });
+  }
+
 
   const projectName = filePathArray[0];
   const relativePathSegments = filePathArray.slice(1);
   let relativePath = relativePathSegments.join('/');
-
-  // Normalize: remove leading/trailing slashes from user input for consistency internally
-  relativePath = relativePath.replace(/^\/+|\/+$/g, '');
+  relativePath = relativePath.replace(/^\/+|\/+$/g, ''); // Normalize
 
   const originalRequestPath = request.nextUrl.pathname;
-  let attemptedPaths: string[] = [];
+  let attemptedPathsInfo: {s3Key: string, attempted: boolean}[] = [];
+
+  const attemptServe = async (s3Key: string) => {
+    attemptedPathsInfo.push({ s3Key, attempted: true });
+    return tryServePathFromS3(s3Key);
+  };
 
   try {
-    // Construct the primary path to try in Firebase Storage
-    // If the path is empty (root of project) or original request ended with '/', assume directory and serve index.html
-    let primaryStoragePathSuffix = relativePath;
+    let primaryPathSuffix = relativePath;
     if (relativePath === '' || originalRequestPath.endsWith('/')) {
-      primaryStoragePathSuffix = (relativePath ? relativePath + '/' : '') + 'index.html';
+      primaryPathSuffix = (relativePath ? relativePath + '/' : '') + 'index.html';
     }
-    // Normalize potential double slashes if relativePath was empty and an index.html was appended
-    primaryStoragePathSuffix = primaryStoragePathSuffix.replace(/\/\//g, '/');
-    let primaryPathToTry = `sites/${projectName}/${primaryStoragePathSuffix}`;
+    primaryPathSuffix = primaryPathSuffix.replace(/\/\//g, '/');
+    let primaryS3Key = `sites/${projectName}/${primaryPathSuffix}`.replace(/^\/+/, '');
     
-    attemptedPaths.push(primaryPathToTry);
-    let response = await tryServePath(primaryPathToTry);
+    let response = await attemptServe(primaryS3Key);
     if (response) return response;
 
-    // If the first attempt failed (e.g., it wasn't `folder/index.html` or `file.js`)
-    // AND the original request did not end with a slash (e.g. /sites/proj/folder, not /sites/proj/folder/)
-    // AND it's not an empty relative path (already handled)
-    // AND it doesn't obviously look like a file with an extension,
-    // then try treating it as a directory and append /index.html.
-    // This handles cases like /sites/myproject/about -> try sites/myproject/about/index.html
-    if (!originalRequestPath.endsWith('/') && relativePath !== '' && !path.extname(relativePath)) {
-      const directoryIndexPathSuffix = `${relativePath}/index.html`.replace(/\/\//g, '/');
-      const directoryIndexPath = `sites/${projectName}/${directoryIndexPathSuffix}`;
+    if (!originalRequestPath.endsWith('/') && relativePath !== '' && !pathUtil.extname(relativePath)) {
+      const directoryIndexS3KeySuffix = `${relativePath}/index.html`.replace(/\/\//g, '/');
+      const directoryIndexS3Key = `sites/${projectName}/${directoryIndexS3KeySuffix}`.replace(/^\/+/, '');
       
-      if (!attemptedPaths.includes(directoryIndexPath)){ // Avoid re-trying the same path if logic overlaps
-        attemptedPaths.push(directoryIndexPath);
-        response = await tryServePath(directoryIndexPath);
+      if (!attemptedPathsInfo.find(p => p.s3Key === directoryIndexS3Key && p.attempted)) {
+        response = await attemptServe(directoryIndexS3Key);
         if (response) return response;
       }
     }
     
-    // If all attempts fail, return 404
-    return NextResponse.json({ error: 'File not found.', tried: attemptedPaths }, { status: 404 });
+    const attemptedS3Keys = attemptedPathsInfo.filter(p => p.attempted).map(p => p.s3Key);
+    return NextResponse.json({ error: 'File not found.', triedS3Keys: attemptedS3Keys }, { status: 404 });
 
   } catch (error: any) {
-    // Catch errors rethrown from tryServePath or other unexpected errors
-    console.error('Unhandled error in Firebase Storage proxy:', error);
-    return NextResponse.json({ error: 'Error fetching file from storage.', details: (error as Error).message, tried: attemptedPaths }, { status: 500 });
+    console.error('Unhandled error in S3 proxy GET handler:', error);
+    const attemptedS3Keys = attemptedPathsInfo.filter(p => p.attempted).map(p => p.s3Key);
+    let errorMessage = 'Error fetching file from S3 storage.';
+    if (error.message === "S3_BUCKET_NAME_NOT_CONFIGURED" || error.name === "MissingS3ConfigError") {
+        errorMessage = "S3 storage is not configured correctly on the server.";
+    } else if (error.name) {
+        errorMessage = `S3 Error (${error.name}): ${error.message}`;
+    }
+
+    return NextResponse.json({ error: errorMessage, details: (error as Error).message, triedS3Keys: attemptedS3Keys }, { status: 500 });
   }
 }
