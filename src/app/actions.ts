@@ -106,7 +106,7 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
       }
       if (dependencies['@sveltejs/kit']) {
         logsRef.value += "Detected SvelteKit.\n";
-        return { framework: 'sveltekit', build_command: scripts.build || 'vite build', output_directory: '.svelte-kit/output/client', reasoning: "SvelteKit dependency found." };
+        return { framework: 'sveltekit', build_command: scripts.build || 'vite build', output_directory: '.svelte-kit/output/client', reasoning: "SvelteKit dependency found." }; // Default might be .svelte-kit/output, check specific adapter
       }
       if (dependencies.nuxt) {
         logsRef.value += "Detected Nuxt.js.\n";
@@ -125,18 +125,21 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
         return { framework: 'cra', build_command: scripts.build || 'npm run build', output_directory: 'build', reasoning: "Create React App (react-scripts) dependency found." };
       }
       if (dependencies.react && dependencies['react-dom']) {
-        logsRef.value += "Detected Generic React project.\n";
+        // This is a fallback for generic React projects if not caught by more specific ones (like CRA or Vite-React)
+        logsRef.value += "Detected Generic React project (react and react-dom found).\n";
         return { framework: 'generic-react', build_command: scripts.build || 'npm run build', output_directory: 'dist', reasoning: "Generic React (react and react-dom) dependencies found." };
       }
 
 
       logsRef.value += "package.json found, but no clear common framework indicators. Assuming static or custom Node.js build.\n";
       if (scripts.build) {
-        return { framework: 'custom-build', build_command: scripts.build, output_directory: 'dist', reasoning: "package.json with a build script, but unrecognized framework. Assuming 'dist' output." };
+        // Could be a Node.js app or something else with a build script.
+        // Defaulting output to 'dist' is a guess.
+        return { framework: 'custom-build', build_command: scripts.build, output_directory: 'dist', reasoning: "package.json with a build script, but unrecognized frontend framework. Assuming 'dist' output." };
       }
       return { framework: 'static', reasoning: "package.json present but no specific framework indicators or standard build script found." };
-    } catch (e) {
-      logsRef.value += `Error parsing package.json: ${(e as Error).message}. Assuming static.\n`;
+    } catch (e: any) {
+      logsRef.value += `Error parsing package.json: ${e.message}. Assuming static.\n`;
       return { framework: 'static', reasoning: "Failed to parse package.json." };
     }
   } else if (fileNameAnalyzed.includes('index.html')) {
@@ -150,18 +153,21 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
 
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
-  let logsRef = { value: '' };
-  let tempZipPath = ''; // Will be set inside try
-  let extractionPath = ''; // Will be set inside try, this refers to the /extracted subdir
-  let projectRootPath = ''; // Will be set inside try
-  let finalProjectName = 'untitled-project'; // Default, can be overridden
+  console.log('deployProject: Action started.');
+  let logsRef = { value: 'Deployment Logs:\n----------------\n' };
+  let tempZipPath = '';
+  let extractionPath = '';
+  let projectRootPath = '';
+  let finalProjectName = 'untitled-project';
   let frameworkDetectionResult: FrameworkDetectionResult = {
     framework: 'static',
     reasoning: "Initial value before analysis",
   };
-  let uniqueExtractionDir: string | null = null; // To store the path like /tmp/project_uploads/uniqueId
+  let uniqueExtractionDir: string | null = null;
 
   try {
+    logsRef.value += 'deployProject: Entered main try block.\n';
+
     // S3 client initialization and configuration checks
     if (!OLA_S3_BUCKET_NAME) {
         logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
@@ -170,15 +176,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     s3Client(); // Initialize client early to catch config errors. Throws on critical config error.
     logsRef.value += 'S3 client initialized and configuration seems present.\n';
 
-    // File handling moved inside try
+    // File handling
     const file = formData.get('zipfile') as File | null;
 
     if (!file) {
-      // This will be caught by the main catch block and returned as DeploymentResult
-      // No, this will return directly. Let's throw to be caught by main catch.
       logsRef.value += 'No file uploaded by the user.\n';
       throw new Error('No file uploaded.');
     }
+    logsRef.value += `Received file: ${file.name}, type: ${file.type}, size: ${file.size} bytes.\n`;
 
     if (file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
       logsRef.value += `Invalid file type received: ${file.type}. Please upload a ZIP file.\n`;
@@ -186,24 +191,24 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
 
     // Temporary directory setup
-    await ensureDirectoryExists(TEMP_UPLOAD_DIR); // This can throw
+    await ensureDirectoryExists(TEMP_UPLOAD_DIR);
     logsRef.value += `Base temporary upload directory ensured: ${TEMP_UPLOAD_DIR}\n`;
 
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    uniqueExtractionDir = path.join(TEMP_UPLOAD_DIR, uniqueId); // Store this for cleanup
+    uniqueExtractionDir = path.join(TEMP_UPLOAD_DIR, uniqueId);
     tempZipPath = path.join(uniqueExtractionDir, file.name);
-    extractionPath = path.join(uniqueExtractionDir, 'extracted'); // This is <uniqueExtractionDir>/extracted
+    extractionPath = path.join(uniqueExtractionDir, 'extracted');
     
-    await ensureDirectoryExists(uniqueExtractionDir); // This can throw
-    await ensureDirectoryExists(extractionPath); // This can throw
+    await ensureDirectoryExists(uniqueExtractionDir);
+    await ensureDirectoryExists(extractionPath);
     logsRef.value += `Root extraction path for this deployment: ${extractionPath}\n`;
 
     logsRef.value += `Processing uploaded file: ${file.name}\n`;
-    const fileBuffer = Buffer.from(await file.arrayBuffer()); // This can throw
-    await fs.writeFile(tempZipPath, fileBuffer); // This can throw
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    await fs.writeFile(tempZipPath, fileBuffer);
     logsRef.value += `Temporary ZIP file saved to: ${tempZipPath}\n`;
 
-    const zip = await JSZip.loadAsync(fileBuffer); // This can throw
+    const zip = await JSZip.loadAsync(fileBuffer);
     const fileNamesInZip: string[] = [];
 
     logsRef.value += `Extracting all ZIP files to ${extractionPath}...\n`;
@@ -284,7 +289,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
          projectRootPath = path.join(baseExtractionPath, path.dirname(chosenFile));
          return { filePath: path.join(baseExtractionPath, chosenFile), content: await fs.readFile(path.join(baseExtractionPath, chosenFile), 'utf-8'), relativePath: chosenFile };
       }
-      projectRootPath = baseExtractionPath; // Default to root of extracted files if no suitable file found
+      projectRootPath = baseExtractionPath;
       return { filePath: null, content: null, relativePath: null };
     };
 
@@ -296,7 +301,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         logsRef.value += `Framework detection input: content of '${analysisFileRelativePath}'. Project root set to: ${projectRootPath}\n`;
         frameworkDetectionResult = nonAIDetectFramework(analysisFileContent, analysisFileRelativePath, logsRef);
     } else {
-        projectRootPath = extractionPath; // Ensure projectRootPath is the base extraction path if no specific file led to a sub-directory
+        projectRootPath = extractionPath;
         logsRef.value += `No suitable package.json or index.html found for framework detection. Project root defaulted to: ${projectRootPath}\n`;
         frameworkDetectionResult = nonAIDetectFramework(null, 'none_found', logsRef);
     }
@@ -325,8 +330,6 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
         let buildCommandToExecute = frameworkDetectionResult.build_command;
         const buildEnv = { ...process.env };
-        // PUBLIC_URL should NOT have a trailing slash for CRA like frameworks
-        // Vite's --base expects a trailing slash if it's a path
         const publicUrlForAssets = `/sites/${finalProjectName}`; 
 
         if (['cra', 'generic-react'].includes(frameworkDetectionResult.framework)) {
@@ -338,14 +341,12 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
             logsRef.value += `Appending --base=${viteBasePath} to Vite build command.\n`;
         }
         else if (['nextjs', 'remix', 'sveltekit', 'nuxtjs', 'astro'].includes(frameworkDetectionResult.framework)) {
-            // For these frameworks, users often set basePath/assetPrefix in their respective config files.
-            // Setting PUBLIC_URL might offer some compatibility for tools used by these frameworks, but isn't the primary mechanism.
-            buildEnv.PUBLIC_URL = publicUrlForAssets;
+            buildEnv.PUBLIC_URL = publicUrlForAssets; // General purpose, might be picked up by some tools
             logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for ${frameworkDetectionResult.framework} build (for potential asset prefixing if framework uses it).\n`;
              if (frameworkDetectionResult.framework === 'nextjs') {
-                // Next.js might require assetPrefix in next.config.js for this to fully work.
-                // We are not modifying user's config files here.
-                logsRef.value += `Note for Next.js: For proper asset prefixing, ensure 'assetPrefix' is set in next.config.js if deploying to a subpath.\n`;
+                // For Next.js, `basePath` or `assetPrefix` in next.config.js is the primary way.
+                // We are not modifying user's config files. This PUBLIC_URL might not be enough.
+                logsRef.value += `Note for Next.js: For proper asset prefixing, ensure 'basePath' or 'assetPrefix' is configured in next.config.js if deploying to a subpath.\n`;
             }
         }
 
@@ -370,14 +371,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         if (!buildSourcePath) {
           const defaultOutputDirs = ['build', 'dist', 'out', '.next', '.output/public', 'public/build', '.svelte-kit/output/client'];
           for (const dir of defaultOutputDirs) {
-            if (detectedOutputDir === dir && buildSourcePath) continue; // Already checked or found
+            if (detectedOutputDir === dir && buildSourcePath) continue;
             const potentialPath = path.join(projectRootPath, dir);
             try {
               await fs.access(potentialPath);
                if ((await fs.stat(potentialPath)).isDirectory()) {
                   buildSourcePath = potentialPath;
                   logsRef.value += `Found build output directory (fallback search) at: ${buildSourcePath}\n`;
-                  frameworkDetectionResult.output_directory = dir; // Update if found via fallback
+                  frameworkDetectionResult.output_directory = dir;
                   break;
               }
             } catch { /* Directory does not exist or not accessible */ }
@@ -389,7 +390,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           try {
             const rootContents = await fs.readdir(projectRootPath, {withFileTypes: true});
             logsRef.value += rootContents.map(entry => `${entry.name}${entry.isDirectory() ? '/' : ''}`).join(', ') + '\n';
-          } catch(e: any) { logsRef.value += `Could not list contents of ${projectRootPath}: ${(e as Error).message}\nStack: ${(e as Error).stack}\n`; }
+          } catch(e: any) { logsRef.value += `Could not list contents of ${projectRootPath}: ${e.message}\nStack: ${e.stack}\n`; }
           throw new Error(`Build output directory not found (expected '${detectedOutputDir || 'various defaults'}'). Check build scripts and output configuration, or ensure PUBLIC_URL/base path settings are compatible.`);
         }
 
@@ -402,7 +403,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         if (buildError.stdout) logsRef.value += `Build stdout:\n${buildError.stdout}\n`;
         if (buildError.stderr) logsRef.value += `Build command stderr:\n${buildError.stderr}\n`;
         if (buildError.stack) logsRef.value += `Build stack:\n${buildError.stack}\n`;
-        throw buildError; // Rethrow to be caught by the main try-catch, which will form the DeploymentResult
+        throw buildError;
       }
     } else {
       logsRef.value += `Static site or no build needed. Uploading files from ${projectRootPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
@@ -412,7 +413,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
     const deployedUrl = `/sites/${finalProjectName}`;
     logsRef.value += `Deployment successful. Access at: ${deployedUrl}\n`;
-
+    console.log(`deployProject: Success. Returning result for project: ${finalProjectName}`);
     return {
       success: true,
       message: 'Project deployed successfully to S3-compatible storage!',
@@ -422,46 +423,81 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     };
 
   } catch (error: any) {
-    let detailedErrorMessage = error.message || "An unknown error occurred.";
-    if (error.name && error.message && !error.message.toLowerCase().includes(error.name.toLowerCase())) {
-        detailedErrorMessage = `${error.name}: ${error.message}`;
-    } else if (error.name && !error.message) {
-        detailedErrorMessage = error.name;
+    console.error('deployProject: Caught error in main try-catch block.', error);
+    logsRef.value += `\n--- ERROR DETAILS ---\n`;
+    
+    let e_message = "An unknown error occurred during deployment.";
+    let e_name = "UnknownError";
+
+    if (error instanceof Error) {
+        e_message = error.message;
+        e_name = error.name;
+        logsRef.value += `Error Name: ${error.name}\n`;
+        logsRef.value += `Error Message: ${error.message}\n`;
+        if (error.stack) {
+             logsRef.value += `Stack Trace:\n${error.stack}\n`;
+        }
+    } else if (typeof error === 'string') {
+        e_message = error;
+        logsRef.value += `Error: ${error}\n`;
+    } else if (error && typeof error === 'object' && 'message' in error) {
+        e_message = String(error.message);
+        if ('name' in error) e_name = String(error.name);
+        logsRef.value += `Error Object: ${JSON.stringify(error)}\n`;
+    } else {
+        logsRef.value += `Unknown Error Type: ${JSON.stringify(error)}\n`;
     }
 
+    let detailedErrorMessage = e_message;
+    if (e_name !== "UnknownError" && e_name !== "" && !e_message.toLowerCase().includes(e_name.toLowerCase())) {
+        detailedErrorMessage = `${e_name}: ${e_message}`;
+    }
+    
     if (error.$metadata && error.$metadata.httpStatusCode) {
         detailedErrorMessage += ` (S3 HTTP Status: ${error.$metadata.httpStatusCode})`;
+        logsRef.value += `S3 HTTP Status Code: ${error.$metadata.httpStatusCode}\n`;
     }
+    logsRef.value += `---------------------\n`;
 
-    logsRef.value += `An error occurred: ${detailedErrorMessage}\nStack: ${error.stack || 'N/A'}\n`;
-    console.error('Detailed Deployment error:', detailedErrorMessage, '\nFull error object:', error);
+
+    console.error('Detailed Deployment error (server console):', detailedErrorMessage, '\nFull error object (server console):', error);
+    console.log(`deployProject: Error. Returning failure result for project: ${finalProjectName}`);
+    
+    // Truncate logs for the response to avoid overly large JSON payloads
+    const logSnippetForResponse = logsRef.value.length > 2000 ? logsRef.value.substring(0, 1997) + "..." : logsRef.value;
 
     return {
         success: false,
-        message: `Deployment failed. ${detailedErrorMessage}`,
-        logs: logsRef.value,
+        message: `Deployment failed. ${detailedErrorMessage}`, // This message goes to the UI
+        logs: logSnippetForResponse, // Send a snippet to UI, full logs on server
         projectName: finalProjectName, 
     };
   } finally {
+    console.log(`deployProject: Entered finally block for project: ${finalProjectName}. UniqueExtractionDir: ${uniqueExtractionDir}`);
     try {
-      // Use uniqueExtractionDir which is /tmp/project_uploads/uniqueId
       if (uniqueExtractionDir && uniqueExtractionDir.startsWith(TEMP_UPLOAD_DIR) && uniqueExtractionDir !== TEMP_UPLOAD_DIR) {
         logsRef.value += `Attempting to delete temporary directory: ${uniqueExtractionDir}\n`;
+        console.log(`deployProject: Attempting to delete temporary directory: ${uniqueExtractionDir}`);
         await fs.rm(uniqueExtractionDir, { recursive: true, force: true });
         logsRef.value += `Successfully deleted temporary directory: ${uniqueExtractionDir}\n`;
-        console.log(`Successfully deleted temporary directory: ${uniqueExtractionDir}`);
+        console.log(`deployProject: Successfully deleted temporary directory: ${uniqueExtractionDir}`);
       } else {
-        if (uniqueExtractionDir) { // Only log if it was set but didn't meet criteria
-            logsRef.value += `Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDir}\n`;
-            console.warn(`Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDir}`);
+        if (uniqueExtractionDir) {
+            const skipMessage = `Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDir}`;
+            logsRef.value += `${skipMessage}\n`;
+            console.warn(`deployProject: ${skipMessage}`);
         } else {
-            logsRef.value += `Skipping cleanup: uniqueExtractionDir was not set (likely due to an early error).\n`;
+            const skipMessage = `Skipping cleanup: uniqueExtractionDir was not set (likely due to an early error).`;
+            logsRef.value += `${skipMessage}\n`;
+            console.log(`deployProject: ${skipMessage}`);
         }
       }
     } catch (cleanupError: any) {
-      logsRef.value += `Error during cleanup of ${uniqueExtractionDir || 'path_not_set'}: ${cleanupError.message}\n`;
-      console.error(`Error during cleanup of ${uniqueExtractionDir || 'path_not_set'}:`, cleanupError);
-      // Do not rethrow from finally as it might mask the original error.
+      const cleanupErrorMessage = `Error during cleanup of ${uniqueExtractionDir || 'path_not_set'}: ${cleanupError.message}`;
+      logsRef.value += `${cleanupErrorMessage}\n`;
+      console.error(`deployProject: ${cleanupErrorMessage}`, cleanupError.stack);
     }
+    console.log(`deployProject: Action finished for project: ${finalProjectName}.`);
   }
 }
+
