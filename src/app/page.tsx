@@ -3,11 +3,11 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, type AuthProvider as FirebaseAuthProvider } from 'firebase/auth';
 import { auth, googleProvider, githubProvider } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
-import { Chrome, GithubIcon, Loader2 } from 'lucide-react'; 
+import { Chrome, GithubIcon, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 export default function HomePage() {
@@ -17,28 +17,33 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!loading && currentUser) {
-      router.push('/dashboard'); 
+      router.push('/dashboard');
     }
   }, [currentUser, loading, router]);
 
-  const handleSignIn = async (provider: typeof googleProvider | typeof githubProvider) => {
+  const handleSignIn = async (provider: FirebaseAuthProvider) => {
     try {
       await signInWithPopup(auth, provider);
-      toast({ title: "Sign In Successful", description: "Welcome!" });
+      toast({ title: "Sign In Successful", description: "Welcome! Redirecting to dashboard..." });
       router.push('/dashboard');
     } catch (error: any) {
       console.error("Sign in error:", error);
+      let description = error.message || "An unexpected error occurred during sign-in.";
+      if (error.code === 'auth/unauthorized-domain') {
+        description = "This app's domain is not authorized for Firebase sign-in. Please check your Firebase console settings (Authentication > Sign-in method > Authorized domains) and add localhost if developing locally. Details: " + error.message;
+      }
       toast({
         title: "Sign In Failed",
-        description: error.message || "An unexpected error occurred during sign-in.",
+        description: description,
         variant: "destructive",
+        duration: 9000, // Longer duration for critical errors
       });
     }
   };
 
-  if (loading || (!loading && currentUser)) { 
+  if (loading || (!loading && currentUser)) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-black p-4">
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-black p-4 text-center relative">
         <Loader2 className="h-16 w-16 animate-spin mb-6 text-white" />
         <p className="text-xl text-white">Loading session...</p>
       </div>
@@ -47,9 +52,8 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-black p-6 text-center relative">
-      
       <div className="relative z-10 flex flex-col items-center">
-        <h1 
+        <h1
           className="text-7xl sm:text-8xl md:text-9xl font-bold tracking-tight mb-12 animate-fadeIn animated-gradient-text-fill"
           data-text="DeployEase"
         >
@@ -59,8 +63,8 @@ export default function HomePage() {
         <div className="space-y-6 w-full max-w-xs">
           <Button
             onClick={() => handleSignIn(googleProvider)}
-            variant="outline" 
-            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:text-black hover:border-gray-400 transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline"
+            className="w-full text-lg py-6 bg-white text-black border border-gray-600 hover:bg-white hover:text-black hover:border-gray-400 transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with Google"
           >
             <Chrome className="h-6 w-6 mr-3" />
@@ -68,11 +72,11 @@ export default function HomePage() {
           </Button>
           <Button
             onClick={() => handleSignIn(githubProvider)}
-            variant="outline" 
-            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:text-black hover:border-gray-400 transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline"
+            className="w-full text-lg py-6 bg-white text-black border border-gray-600 hover:bg-white hover:text-black hover:border-gray-400 transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with GitHub"
           >
-            <GithubIcon className="h-6 w-6 mr-3" /> 
+            <GithubIcon className="h-6 w-6 mr-3" />
             Sign in with GitHub
           </Button>
         </div>

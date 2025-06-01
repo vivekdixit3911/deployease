@@ -45,8 +45,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-12 w-12 animate-spin text-primary" />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-black text-white">
+        <Loader2 className="h-12 w-12 animate-spin text-white" />
         <p className="ml-4 text-lg">Loading user session...</p>
       </div>
     );
