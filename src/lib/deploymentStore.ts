@@ -1,53 +1,53 @@
+
 // src/lib/deploymentStore.ts
 export interface DeploymentProgress {
   id: string;
   logs: string[];
-  status: string; // e.g., "Starting", "Cloning", "Building", "Uploading", "Success", "Failed"
+  status: string; 
+  message?: string; // Message associated with completion or final status
   error?: string;
-  success?: boolean;
+  success?: boolean; // Undefined until completion
   projectName?: string;
   deployedUrl?: string;
   isDone: boolean;
-  // Consider adding a timestamp for cleanup purposes in a real app
-  // timestamp: number; 
+  createdAt: number; // For cleanup purposes
 }
 
-// This is an in-memory store. In a real-world scenario with multiple server instances,
-// you'd use a distributed store like Redis or a database + pub/sub.
 export const deploymentStates = new Map<string, DeploymentProgress>();
 
 export function initializeDeployment(deploymentId: string): void {
   if (deploymentStates.has(deploymentId)) {
-    console.warn(`Deployment ID ${deploymentId} already exists. Re-initializing.`);
+    console.warn(`[DeploymentStore] Deployment ID ${deploymentId} already exists. Re-initializing.`);
   }
-  deploymentStates.set(deploymentId, {
+  const initialState: DeploymentProgress = {
     id: deploymentId,
     logs: ['Deployment initialized...'],
     status: 'Initialized',
     isDone: false,
-    // timestamp: Date.now(),
-  });
-  // console.log(`Initialized deployment: ${deploymentId}`, deploymentStates.get(deploymentId));
+    createdAt: Date.now(),
+  };
+  deploymentStates.set(deploymentId, initialState);
+  console.log(`[DeploymentStore] Initialized deployment: ${deploymentId}`);
 }
 
 export function addLog(deploymentId: string, log: string): void {
   const state = deploymentStates.get(deploymentId);
-  if (state) {
+  if (state && !state.isDone) { // Only add logs if not done to prevent modification after completion
     state.logs.push(log);
-    // console.log(`[${deploymentId}] Log added: ${log}`);
-  } else {
-    console.warn(`[addLog] Deployment state not found for ID: ${deploymentId}`);
+  } else if (!state) {
+    console.warn(`[DeploymentStore:addLog] Deployment state not found for ID: ${deploymentId}`);
   }
 }
 
 export function updateStatus(deploymentId: string, status: string): void {
   const state = deploymentStates.get(deploymentId);
-  if (state) {
+  if (state && !state.isDone) {
     state.status = status;
-    addLog(deploymentId, `Status: ${status}`); // Also log status changes
-    // console.log(`[${deploymentId}] Status updated: ${status}`);
-  } else {
-    console.warn(`[updateStatus] Deployment state not found for ID: ${deploymentId}`);
+    // Optionally add status change to logs automatically
+    // state.logs.push(`Status: ${status}`); 
+    console.log(`[DeploymentStore:updateStatus] ${deploymentId} status updated: ${status}`);
+  } else if (!state) {
+    console.warn(`[DeploymentStore:updateStatus] Deployment state not found for ID: ${deploymentId}`);
   }
 }
 
@@ -58,22 +58,31 @@ export function setDeploymentComplete(
     message: string;
     projectName?: string;
     deployedUrl?: string;
-    error?: string; // This should be the primary error message if !success
+    error?: string;
   }
 ): void {
   const state = deploymentStates.get(deploymentId);
   if (state) {
+    if (state.isDone) {
+      console.warn(`[DeploymentStore:setDeploymentComplete] ${deploymentId} is already marked as done. Ignoring update.`);
+      return;
+    }
     state.isDone = true;
     state.success = result.success;
+    state.message = result.message; // Overall message for the deployment result
     state.status = result.success ? 'Completed Successfully' : 'Failed';
-    state.projectName = result.projectName;
+    state.projectName = result.projectName || state.projectName; // Preserve if already set
     state.deployedUrl = result.deployedUrl;
-    // If an error field is explicitly provided, use it. Otherwise, use message for failure.
     state.error = result.error || (result.success ? undefined : result.message);
-    addLog(deploymentId, `Deployment ${result.success ? 'succeeded' : 'failed'}: ${result.message}`);
-    // console.log(`[${deploymentId}] Deployment complete. Success: ${result.success}`);
+    
+    // Add final log message
+    // state.logs.push(`--- Deployment ${result.success ? 'Succeeded' : 'Failed'} ---`);
+    // state.logs.push(result.message);
+    // if (result.error && !result.success) state.logs.push(`Error details: ${result.error}`);
+
+    console.log(`[DeploymentStore:setDeploymentComplete] ${deploymentId} marked as complete. Success: ${result.success}`);
   } else {
-    console.warn(`[setDeploymentComplete] Deployment state not found for ID: ${deploymentId}`);
+    console.warn(`[DeploymentStore:setDeploymentComplete] Deployment state not found for ID: ${deploymentId}. Cannot mark as complete.`);
   }
 }
 
@@ -81,28 +90,24 @@ export function getDeploymentState(deploymentId: string): DeploymentProgress | u
   return deploymentStates.get(deploymentId);
 }
 
-// Basic cleanup for old, completed deployments to prevent unbounded memory growth.
-// In a production app, this needs to be more robust and consider server restarts.
-const CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const MAX_DEPLOYMENT_AGE = 60 * 60 * 1000; // 1 hour
+// Basic cleanup for old, completed deployments
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const MAX_DEPLOYMENT_STATE_AGE_MS = 60 * 60 * 1000; // 1 hour
 
-setInterval(() => {
+function cleanupOldDeployments() {
   const now = Date.now();
   let cleanedCount = 0;
-  deploymentStates.forEach((state, id) => {
-    // Check if state has a timestamp, if not, we can't effectively clean it by age.
-    // For simplicity, we'll assume we add a timestamp when initializing if using this.
-    // Currently, no timestamp is added, so this cleanup is illustrative.
-    // A more robust way would be to track creation time.
-    // For now, just delete if it's done. A real app needs better criteria.
-    if (state.isDone) { // Simple: just remove if done (not ideal as client might still be looking)
-        // A better approach is to remove if done AND old.
-        // For now, this is a placeholder for a real cleanup strategy.
-        // To avoid issues with very short-lived states, we might not delete immediately here
-        // or only delete very old "done" states.
+  // console.log('[DeploymentStoreCleanup] Running cleanup task...');
+  for (const [id, state] of deploymentStates.entries()) {
+    if (state.isDone && (now - state.createdAt > MAX_DEPLOYMENT_STATE_AGE_MS)) {
+      deploymentStates.delete(id);
+      cleanedCount++;
     }
-  });
-  // if (cleanedCount > 0) {
-  //   console.log(`[DeploymentStoreCleanup] Cleaned up ${cleanedCount} old deployment states.`);
-  // }
-}, CLEANUP_INTERVAL);
+  }
+  if (cleanedCount > 0) {
+    console.log(`[DeploymentStoreCleanup] Cleaned up ${cleanedCount} old deployment states.`);
+  }
+}
+
+setInterval(cleanupOldDeployments, CLEANUP_INTERVAL_MS);
+console.log('[DeploymentStore] Initialized with cleanup interval.');
