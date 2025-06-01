@@ -217,9 +217,27 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     };
 
   } catch (error: any) {
-    logsRef.value += `An error occurred: ${error.message}\n Stack: ${error.stack}\n`;
-    console.error('Deployment error:', error);
-    return { success: false, message: `Deployment failed: ${error.message}`, logs: logsRef.value };
+    let detailedErrorMessage = error.message;
+    if (error.code) { // FirebaseError often has a code
+        detailedErrorMessage = `Firebase Storage Error (${error.code}): ${error.message}`;
+    }
+    // Attempt to get more info from serverResponse, which might exist on Firebase Storage errors
+    // The actual structure of serverResponse can vary.
+    if (error.serverResponse) {
+        detailedErrorMessage += `\nServer Response: ${typeof error.serverResponse === 'string' ? error.serverResponse : JSON.stringify(error.serverResponse)}`;
+    } else if (error.customData && error.customData.serverResponse) { // Sometimes nested
+        detailedErrorMessage += `\nServer Response (customData): ${typeof error.customData.serverResponse === 'string' ? error.customData.serverResponse : JSON.stringify(error.customData.serverResponse)}`;
+    }
+
+
+    logsRef.value += `An error occurred: ${detailedErrorMessage}\nStack: ${error.stack || 'N/A'}\n`;
+    console.error('Detailed Deployment error:', detailedErrorMessage, 'Full error object:', error);
+    
+    return { 
+        success: false, 
+        message: `Deployment failed. ${detailedErrorMessage}`, // Return the more detailed message
+        logs: logsRef.value 
+    };
   } finally {
     // Clean up temporary local files
     if (tempZipPath) {
@@ -237,3 +255,5 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
   }
 }
+
+    
