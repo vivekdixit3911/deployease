@@ -36,6 +36,38 @@ interface FullDeploymentResultForStore {
   error?: string;
 }
 
+// Enhanced error message extraction
+function extractErrorMessage(error: any): string {
+  if (!error) return 'An unknown error occurred (error object was null or undefined).';
+  if (error instanceof Error) {
+    let message = error.message || 'Error object had no message property.';
+    // Include stack in development for more details, but not in logs for production simplicity if desired
+    // if (process.env.NODE_ENV === 'development' && error.stack) {
+    //   message += `\nStack: ${error.stack}`;
+    // }
+    return message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    const stringified = JSON.stringify(error);
+    if (stringified === '{}') return 'An empty object was thrown as an error.';
+    return stringified;
+  } catch (e: any) {
+    let fallbackMessage = 'Could not stringify error object due to an internal error.';
+    if (e && typeof e.message === 'string') {
+      fallbackMessage = `Could not stringify error object: ${e.message}`;
+    }
+    const errorAsString = String(error);
+    if (errorAsString !== '[object Object]') {
+      fallbackMessage += `. Basic error string: ${errorAsString}`;
+    }
+    return fallbackMessage;
+  }
+}
+
+
 async function ensureDirectoryExists(dirPath: string, deploymentId: string, step: string) {
   const logPrefix = `[ensureDirectoryExists:${deploymentId}:${step}]`;
   addLog(deploymentId, `${logPrefix} Ensuring directory exists: ${dirPath}`);
@@ -43,10 +75,10 @@ async function ensureDirectoryExists(dirPath: string, deploymentId: string, step
     await fs.mkdir(dirPath, { recursive: true });
     addLog(deploymentId, `${logPrefix} Successfully ensured directory exists: ${dirPath}`);
   } catch (error: any) {
-    const errorMsg = `${logPrefix} Failed to create directory ${dirPath}: ${error.message}`;
+    const errorMsg = `${logPrefix} Failed to create directory ${dirPath}: ${extractErrorMessage(error)}`;
     addLog(deploymentId, errorMsg);
-    console.error(errorMsg, error); // Log detailed error server-side
-    throw new Error(errorMsg);
+    console.error(errorMsg, error);
+    throw new Error(errorMsg); // Re-throw to be caught by caller
   }
 }
 
@@ -159,7 +191,7 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
       addLog(deploymentId, `${logPrefix} No specific framework or standard build script found in package.json. Assuming static.`);
       return { framework: 'static', reasoning: "package.json present but no specific framework indicators or standard build script found." };
     } catch (e: any) {
-      addLog(deploymentId, `${logPrefix} Error parsing package.json: ${e.message}. Assuming static.`);
+      addLog(deploymentId, `${logPrefix} Error parsing package.json: ${extractErrorMessage(e)}. Assuming static.`);
       return { framework: 'static', reasoning: "Failed to parse package.json." };
     }
   } else if (fileNameAnalyzed.includes('index.html')) {
@@ -171,43 +203,16 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
   return { framework: 'static', reasoning: "No definitive project files (package.json, index.html) found for analysis." };
 }
 
-function extractErrorMessage(error: any): string {
-  if (!error) return 'An unknown error occurred (error object was null or undefined).';
-  if (error instanceof Error) {
-    return error.message || 'Error object had no message property.';
-  }
-  if (typeof error === 'string') {
-    return error;
-  }
-  try {
-    const stringified = JSON.stringify(error);
-    // Avoid returning "{}" for empty objects, be more descriptive
-    if (stringified === '{}') return 'An empty object was thrown as an error.';
-    return stringified;
-  } catch (e: any) {
-    // Fallback if stringify fails (e.g. circular references not handled by simple JSON.stringify)
-    let fallbackMessage = 'Could not stringify error object due to an internal error.';
-    if (e && typeof e.message === 'string') {
-        fallbackMessage = `Could not stringify error object: ${e.message}`;
-    }
-    // Attempt to get a basic string representation
-    const errorAsString = String(error);
-    if (errorAsString !== '[object Object]') {
-        fallbackMessage += `. Basic error string: ${errorAsString}`;
-    }
-    return fallbackMessage;
-  }
-}
 
 async function performFullDeployment(deploymentId: string, formData: FormData) {
   const logPrefix = `[performFullDeployment:${deploymentId}]`;
   console.log(`${logPrefix} Starting full deployment process.`);
-  updateStatus(deploymentId, 'Processing input...');
+  // Project name will be determined later, default for early errors
+  let finalProjectNameForErrorHandling = 'untitled-project-setup-phase'; 
   addLog(deploymentId, `--- ${logPrefix} Process Started ---`);
+  updateStatus(deploymentId, 'Processing input...');
   
-  let finalProjectName = 'untitled-project';
-  let uniqueTempIdDir: string | null = null;
-  let projectRootPath = '';
+  let uniqueTempIdDir: string | null = null; // For cleanup
 
   try {
     addLog(deploymentId, `${logPrefix} [Step 1/7] Validating S3 config and creating temp directories...`);
@@ -215,7 +220,7 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
     if (!OLA_S3_BUCKET_NAME) {
       throw new MissingS3ConfigError('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); 
+    s3Client(); // Initialize/validate S3 client
     addLog(deploymentId, `${logPrefix} S3 client configuration appears valid.`);
     
     await ensureDirectoryExists(TEMP_UPLOAD_DIR, deploymentId, "TempUploadDirSetup");
@@ -232,7 +237,7 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
     }
     
     let sourceNameForProject = 'untitled-project';
-    let baseExtractionDir = '';
+    let baseExtractionDir = ''; // This will be the root of the extracted/cloned files
 
     if (githubUrl) {
       addLog(deploymentId, `${logPrefix} [Step 2/7] Processing GitHub URL: ${githubUrl}`);
@@ -292,12 +297,13 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
       addLog(deploymentId, `${logPrefix} ZIP extraction complete. Files extracted: ${fileNamesInZip.length}`);
       if (fileNamesInZip.length === 0) throw new Error('The uploaded ZIP file is empty or invalid.');
       sourceNameForProject = file.name;
-    } else {
+    } else { // Should be caught by earlier check, but defensive
       throw new Error("No deployment source (ZIP or Git URL) provided.");
     }
 
     addLog(deploymentId, `${logPrefix} [Step 3/7] Sanitizing project name from: ${sourceNameForProject}`);
-    finalProjectName = sanitizeName(sourceNameForProject) || `web-deploy-${deploymentId.substring(0, 5)}`;
+    const finalProjectName = sanitizeName(sourceNameForProject) || `web-deploy-${deploymentId.substring(0, 5)}`;
+    finalProjectNameForErrorHandling = finalProjectName; // Update for better error messages
     addLog(deploymentId, `${logPrefix} Using project name: ${finalProjectName}`);
     updateStatus(deploymentId, `Project: ${finalProjectName}. Detecting framework...`);
 
@@ -343,8 +349,9 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
     };
 
     const analysisResult = await findAnalysisFile(baseExtractionDir, baseExtractionDir);
-    projectRootPath = analysisResult.projectRoot;
+    const projectRootPath = analysisResult.projectRoot; // This is where npm install/build will run
     let frameworkDetectionResult: FrameworkDetectionResult;
+
     if (analysisResult.relativePath && analysisResult.content) {
         addLog(deploymentId, `${logPrefix} Framework detection using file: '${analysisResult.relativePath}'. Effective project root: ${projectRootPath}`);
         frameworkDetectionResult = nonAIDetectFramework(analysisResult.content, analysisResult.relativePath, deploymentId);
@@ -356,106 +363,103 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
     if(frameworkDetectionResult.reasoning) addLog(deploymentId, `${logPrefix} Reasoning: ${frameworkDetectionResult.reasoning}`);
 
     const needsBuild = frameworkDetectionResult.framework !== 'static' && frameworkDetectionResult.build_command;
-    let buildSourcePath = projectRootPath;
+    let finalBuildSourcePath = projectRootPath; // Path from which to upload (e.g. build output dir or projectRootPath for static)
 
     if (needsBuild && frameworkDetectionResult.build_command) {
       addLog(deploymentId, `${logPrefix} [Step 5/7] Project requires build. Starting build process in ${projectRootPath}...`);
       updateStatus(deploymentId, 'Running build process...');
+      
+      addLog(deploymentId, `${logPrefix} Updating Browserslist database in ${projectRootPath}...`);
+      updateStatus(deploymentId, 'Updating Browserslist DB...');
       try {
-        addLog(deploymentId, `${logPrefix} Updating Browserslist database in ${projectRootPath}...`);
-        updateStatus(deploymentId, 'Updating Browserslist DB...');
-        try {
-          const updateDbOutput = await execAsync('npx update-browserslist-db@latest --yes', { cwd: projectRootPath });
-          if(updateDbOutput.stdout) addLog(deploymentId, `${logPrefix} Browserslist update stdout: ${updateDbOutput.stdout}`);
-          if(updateDbOutput.stderr) addLog(deploymentId, `${logPrefix} Browserslist update stderr: ${updateDbOutput.stderr}`);
-        } catch (updateDbError: any) {
-          addLog(deploymentId, `${logPrefix} Warning: Failed to update Browserslist database: ${extractErrorMessage(updateDbError)}. Build will proceed.`);
-        }
-        
-        addLog(deploymentId, `${logPrefix} Running 'npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false' in ${projectRootPath}...`);
-        updateStatus(deploymentId, 'Installing dependencies (npm install)...');
-        const installOutput = await execAsync('npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false', { cwd: projectRootPath });
-        if(installOutput.stdout) addLog(deploymentId, `${logPrefix} npm install stdout: ${installOutput.stdout}`);
-        if(installOutput.stderr) addLog(deploymentId, `${logPrefix} npm install stderr: ${installOutput.stderr}`);
+        const updateDbOutput = await execAsync('npx update-browserslist-db@latest --yes', { cwd: projectRootPath });
+        if(updateDbOutput.stdout) addLog(deploymentId, `${logPrefix} Browserslist update stdout: ${updateDbOutput.stdout}`);
+        if(updateDbOutput.stderr) addLog(deploymentId, `${logPrefix} Browserslist update stderr (may not be error): ${updateDbOutput.stderr}`);
+      } catch (updateDbError: any) {
+        addLog(deploymentId, `${logPrefix} Warning: Failed to update Browserslist database: ${extractErrorMessage(updateDbError)}. Build will proceed.`);
+      }
+      
+      addLog(deploymentId, `${logPrefix} Running 'npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false' in ${projectRootPath}...`);
+      updateStatus(deploymentId, 'Installing dependencies (npm install)...');
+      const installOutput = await execAsync('npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false', { cwd: projectRootPath });
+      if(installOutput.stdout) addLog(deploymentId, `${logPrefix} npm install stdout: ${installOutput.stdout}`);
+      if(installOutput.stderr) addLog(deploymentId, `${logPrefix} npm install stderr (may not be error): ${installOutput.stderr}`);
 
-        let buildCommandToExecute = frameworkDetectionResult.build_command;
-        const buildEnv = { ...process.env };
-        const publicUrlForAssets = `/sites/${finalProjectName}`;
-        
-        if (['cra', 'generic-react', 'vite-react'].includes(frameworkDetectionResult.framework)) {
-            buildEnv.PUBLIC_URL = publicUrlForAssets;
-            if (frameworkDetectionResult.framework === 'vite-react' && !buildCommandToExecute.includes('--base')) {
-                const viteBasePath = publicUrlForAssets.endsWith('/') ? publicUrlForAssets : `${publicUrlForAssets}/`;
-                buildCommandToExecute = `${buildCommandToExecute.replace(/vite build/, `vite build --base=${viteBasePath}`)}`; 
-                addLog(deploymentId, `${logPrefix} Adjusted Vite build command: '${buildCommandToExecute}'`);
-            } else {
-                addLog(deploymentId, `${logPrefix} Setting PUBLIC_URL=${publicUrlForAssets} for build.`);
-            }
-        }
-        
-        addLog(deploymentId, `${logPrefix} Executing build command: '${buildCommandToExecute}' in ${projectRootPath} with env: ${JSON.stringify(buildEnv.PUBLIC_URL ? { PUBLIC_URL: buildEnv.PUBLIC_URL } : {})}`);
-        updateStatus(deploymentId, `Building project (${buildCommandToExecute})...`);
-        const buildOutput = await execAsync(buildCommandToExecute, { cwd: projectRootPath, env: buildEnv });
-        if(buildOutput.stdout) addLog(deploymentId, `${logPrefix} Build command stdout: ${buildOutput.stdout}`);
-        if(buildOutput.stderr) addLog(deploymentId, `${logPrefix} Build command stderr: ${buildOutput.stderr}`);
-
-        const detectedOutputDirName = frameworkDetectionResult.output_directory;
-        let foundBuildOutputDir = '';
-        if (detectedOutputDirName) {
-            const potentialPath = path.join(projectRootPath, detectedOutputDirName);
-            try {
-                await fs.access(potentialPath);
-                if ((await fs.stat(potentialPath)).isDirectory()) {
-                    foundBuildOutputDir = potentialPath;
-                    addLog(deploymentId, `${logPrefix} Build output successfully found at: ${foundBuildOutputDir}`);
-                }
-            } catch { /* not found */ }
-        }
-        if (!foundBuildOutputDir) {
-          const commonOutputDirs = ['dist', 'build', 'out', '.next', 'public', '.output/public', '.svelte-kit/output/client'];
-          addLog(deploymentId, `${logPrefix} Primary build output directory '${detectedOutputDirName || 'N/A'}' not confirmed. Fallback searching: ${commonOutputDirs.join(', ')} within ${projectRootPath}`);
-          for (const dir of commonOutputDirs) {
-            if (detectedOutputDirName === dir && !foundBuildOutputDir) continue; 
-            const potentialPath = path.join(projectRootPath, dir);
-            try {
-              await fs.access(potentialPath);
-               if ((await fs.stat(potentialPath)).isDirectory()) {
-                  foundBuildOutputDir = potentialPath;
-                  addLog(deploymentId, `${logPrefix} Found build output directory (fallback search) at: ${foundBuildOutputDir}`);
-                  break;
-              }
-            } catch { /* Directory does not exist */ }
+      let buildCommandToExecute = frameworkDetectionResult.build_command;
+      const buildEnv = { ...process.env };
+      const publicUrlForAssets = `/sites/${finalProjectName}`; // S3 base path for assets
+      
+      if (['cra', 'generic-react', 'vite-react'].includes(frameworkDetectionResult.framework)) {
+          buildEnv.PUBLIC_URL = publicUrlForAssets;
+          if (frameworkDetectionResult.framework === 'vite-react' && !buildCommandToExecute.includes('--base')) {
+              const viteBasePath = publicUrlForAssets.endsWith('/') ? publicUrlForAssets : `${publicUrlForAssets}/`;
+              buildCommandToExecute = `${buildCommandToExecute.replace(/vite build/, `vite build --base=${viteBasePath}`)}`; 
+              addLog(deploymentId, `${logPrefix} Adjusted Vite build command: '${buildCommandToExecute}'`);
+          } else {
+              addLog(deploymentId, `${logPrefix} Setting PUBLIC_URL=${publicUrlForAssets} for build.`);
           }
+      }
+      
+      addLog(deploymentId, `${logPrefix} Executing build command: '${buildCommandToExecute}' in ${projectRootPath} with env: ${JSON.stringify(buildEnv.PUBLIC_URL ? { PUBLIC_URL: buildEnv.PUBLIC_URL } : {})}`);
+      updateStatus(deploymentId, `Building project (${buildCommandToExecute})...`);
+      const buildOutput = await execAsync(buildCommandToExecute, { cwd: projectRootPath, env: buildEnv });
+      if(buildOutput.stdout) addLog(deploymentId, `${logPrefix} Build command stdout: ${buildOutput.stdout}`);
+      if(buildOutput.stderr) addLog(deploymentId, `${logPrefix} Build command stderr (may not be error): ${buildOutput.stderr}`);
+
+      const detectedOutputDirName = frameworkDetectionResult.output_directory;
+      let foundBuildOutputDir = '';
+      if (detectedOutputDirName) {
+          const potentialPath = path.join(projectRootPath, detectedOutputDirName);
+          try {
+              await fs.access(potentialPath);
+              if ((await fs.stat(potentialPath)).isDirectory()) {
+                  foundBuildOutputDir = potentialPath;
+                  addLog(deploymentId, `${logPrefix} Build output successfully found at primary path: ${foundBuildOutputDir}`);
+              }
+          } catch { addLog(deploymentId, `${logPrefix} Primary output dir '${potentialPath}' not found or not a directory.`); }
+      }
+
+      if (!foundBuildOutputDir) {
+        const commonOutputDirs = ['dist', 'build', 'out', '.next', 'public', '.output/public', '.svelte-kit/output/client'];
+        addLog(deploymentId, `${logPrefix} Primary build output directory '${detectedOutputDirName || 'N/A'}' not confirmed. Fallback searching: ${commonOutputDirs.join(', ')} within ${projectRootPath}`);
+        for (const dir of commonOutputDirs) {
+          if (detectedOutputDirName === dir && !foundBuildOutputDir) continue; 
+          const potentialPath = path.join(projectRootPath, dir);
+          try {
+            await fs.access(potentialPath);
+             if ((await fs.stat(potentialPath)).isDirectory()) {
+                foundBuildOutputDir = potentialPath;
+                addLog(deploymentId, `${logPrefix} Found build output directory (fallback search) at: ${foundBuildOutputDir}`);
+                break;
+            }
+          } catch { /* Directory does not exist */ }
         }
-        if (!foundBuildOutputDir) {
-          addLog(deploymentId, `${logPrefix} Error: Build output directory not found in ${projectRootPath} after build. Expected: '${detectedOutputDirName || 'various defaults'}'. Uploading from project root as fallback.`);
-        } else {
-            buildSourcePath = foundBuildOutputDir;
-        }
-      } catch (buildError: any) {
-        const errorMsg = extractErrorMessage(buildError);
-        addLog(deploymentId, `${logPrefix} Build process failed: ${errorMsg}`);
-        if (buildError.stdout) addLog(deploymentId, `${logPrefix} Build stdout (on error):\n${buildError.stdout}`);
-        if (buildError.stderr) addLog(deploymentId, `${logPrefix} Build stderr (on error):\n${buildError.stderr}`);
-        throw buildError;
+      }
+
+      if (!foundBuildOutputDir) {
+        addLog(deploymentId, `${logPrefix} CRITICAL: Build output directory not found in ${projectRootPath} after build. Expected: '${detectedOutputDirName || 'various defaults'}'. Attempting to upload from project root as last resort, but this is likely wrong.`);
+        // finalBuildSourcePath remains projectRootPath
+      } else {
+          finalBuildSourcePath = foundBuildOutputDir;
       }
     } else {
       addLog(deploymentId, `${logPrefix} [Step 5/7] Static site or no build command. Preparing for direct upload from ${projectRootPath}.`);
       updateStatus(deploymentId, 'Preparing for static upload...');
+      // finalBuildSourcePath is already projectRootPath
       if (githubUrl && frameworkDetectionResult.framework === 'static') {
         try {
-          const staticDirContents = await fs.readdir(buildSourcePath);
-          addLog(deploymentId, `${logPrefix} Contents of static site source directory '${buildSourcePath}' for upload: ${staticDirContents.join(', ')}`);
+          const staticDirContents = await fs.readdir(finalBuildSourcePath);
+          addLog(deploymentId, `${logPrefix} Contents of static site source directory '${finalBuildSourcePath}' for upload: ${staticDirContents.join(', ')}`);
         } catch (readdirError: any) {
-          addLog(deploymentId, `${logPrefix} Warning: Could not list contents of static site source directory '${buildSourcePath}': ${readdirError.message}`);
+          addLog(deploymentId, `${logPrefix} Warning: Could not list contents of static site source directory '${finalBuildSourcePath}': ${extractErrorMessage(readdirError)}`);
         }
       }
     }
     
-    addLog(deploymentId, `${logPrefix} [Step 6/7] Uploading files from ${buildSourcePath} to S3...`);
+    addLog(deploymentId, `${logPrefix} [Step 6/7] Uploading files from ${finalBuildSourcePath} to S3...`);
     updateStatus(deploymentId, 'Uploading files to S3...');
     const s3ProjectBaseKey = `sites/${finalProjectName}`;
-    await uploadDirectoryRecursiveS3(buildSourcePath, s3ProjectBaseKey, deploymentId);
+    await uploadDirectoryRecursiveS3(finalBuildSourcePath, s3ProjectBaseKey, deploymentId);
     addLog(deploymentId, `${logPrefix} Files uploaded successfully to S3.`);
 
     const deployedUrl = `/sites/${finalProjectName}/`; 
@@ -473,8 +477,8 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
 
   } catch (error: any) {
     const errorMessage = extractErrorMessage(error);
-    const errorName = error instanceof Error ? error.name : "UnknownError";
-    console.error(`${logPrefix} CRITICAL FAILURE. Project: ${finalProjectName}. Error (${errorName}): ${errorMessage}`, error.stack || error);
+    const errorName = error instanceof Error ? error.name : "UnknownErrorInPerformFullDeployment";
+    console.error(`${logPrefix} CRITICAL FAILURE. Project: ${finalProjectNameForErrorHandling}. Error (${errorName}): ${errorMessage}`, error.stack || error);
     
     addLog(deploymentId, `\n--- ${logPrefix} DEPLOYMENT FAILED ---`);
     addLog(deploymentId, `Error Type: ${errorName}`);
@@ -487,10 +491,10 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
     const finalErrorResult: FullDeploymentResultForStore = {
         success: false,
         message: `Deployment failed: ${errorMessage}`,
-        projectName: finalProjectName, 
+        projectName: finalProjectNameForErrorHandling, 
         error: errorMessage,
     };
-    setDeploymentComplete(deploymentId, finalErrorResult);
+    setDeploymentComplete(deploymentId, finalErrorResult); // Ensure isDone is set
     
   } finally {
     const logFinallyPrefix = `${logPrefix}:Finally]`;
@@ -509,21 +513,21 @@ async function performFullDeployment(deploymentId: string, formData: FormData) {
        addLog(deploymentId, `${logFinallyPrefix} Skipped deletion of temp directory (path issue or not set): ${uniqueTempIdDir || 'Not Set'}`);
     }
 
+    // Ensure deployment state is marked as done if somehow missed
     const finalState = deploymentStates.get(deploymentId);
     if (finalState && !finalState.isDone) {
-        const fallbackMessage = "Deployment process concluded with an unexpected state.";
-        console.warn(`${logFinallyPrefix} State was not marked as done, forcing it now.`);
-        addLog(deploymentId, `${logFinallyPrefix} Forcing deployment completion state due to unexpected termination.`);
+        const fallbackMessage = finalState.error || "Deployment process concluded with an unexpected state and was not marked as done.";
+        console.warn(`${logFinallyPrefix} State for ${deploymentId} was not marked as done, forcing it now.`);
+        addLog(deploymentId, `${logFinallyPrefix} Forcing deployment completion state for ${deploymentId} due to unexpected termination or missed 'setDeploymentComplete'.`);
         setDeploymentComplete(deploymentId, {
             success: false,
-            message: finalState.error || fallbackMessage,
-            error: finalState.error || fallbackMessage,
-            projectName: finalState.projectName || finalProjectName,
+            message: fallbackMessage,
+            error: fallbackMessage,
+            projectName: finalState.projectName || finalProjectNameForErrorHandling,
         });
     }
-    addLog(deploymentId, `--- ${logPrefix} Process Finished ---`);
-    const finalIsDoneState = deploymentStates.get(deploymentId)?.isDone;
-    console.log(`${logFinallyPrefix} Final isDone state: ${finalIsDoneState}`);
+    addLog(deploymentId, `--- ${logPrefix} Process Finished (isDone: ${deploymentStates.get(deploymentId)?.isDone}) ---`);
+    console.log(`${logFinallyPrefix} Final isDone state for ${deploymentId}: ${deploymentStates.get(deploymentId)?.isDone}`);
   }
 }
 
@@ -541,22 +545,26 @@ export async function deployProject(formData: FormData): Promise<InitialDeployme
     addLog(deploymentId, `${actionLogPrefix} Deployment state initialized for ID: ${deploymentId}`);
     updateStatus(deploymentId, 'Deployment process initiated...');
 
+    // Intentionally not awaiting performFullDeployment to allow immediate response to client
     performFullDeployment(deploymentId, formData)
       .then(() => {
         console.log(`${actionLogPrefix} Background task for ${deploymentId} completed its main execution path.`);
       })
       .catch((err) => {
+        // This catch is for unhandled promise rejections from performFullDeployment,
+        // though performFullDeployment itself should catch its internal errors and call setDeploymentComplete.
+        // This is a safety net.
         const errorMessage = extractErrorMessage(err);
-        console.error(`${actionLogPrefix} UNHANDLED CRITICAL error from performFullDeployment PROMISE for ${deploymentId}:`, errorMessage, err.stack, err);
+        console.error(`${actionLogPrefix} UNHANDLED CRITICAL error from performFullDeployment PROMISE for ${deploymentId}:`, errorMessage, err.stack || err);
         
         const currentState = deploymentStates.get(deploymentId);
         if (currentState && !currentState.isDone) {
-            addLog(deploymentId, `${actionLogPrefix} CRITICAL UNHANDLED ERROR in background task promise: ${errorMessage}`);
+            addLog(deploymentId, `${actionLogPrefix} CRITICAL UNHANDLED ERROR in background task promise (performFullDeployment): ${errorMessage}`);
             setDeploymentComplete(deploymentId, { 
               success: false,
               message: `A critical unhandled error occurred in the deployment background process: ${errorMessage}`,
               error: errorMessage,
-              projectName: currentState.projectName || 'unknown-project',
+              projectName: currentState.projectName || 'unknown-project-promise-rejection',
             });
         }
       });
@@ -570,24 +578,26 @@ export async function deployProject(formData: FormData): Promise<InitialDeployme
     return response;
 
   } catch (initialError: any) {
+    // This catches errors in the synchronous part of deployProject (e.g., deploymentId generation, initializeDeployment)
     const errorMsg = extractErrorMessage(initialError);
     const errorName = initialError instanceof Error ? initialError.name : "UnknownInitialError";
-    console.error(`${actionLogPrefix} CRITICAL error during deployProject INITIATION: Name: ${errorName}, Msg: ${errorMsg}`, initialError.stack, initialError);
+    console.error(`${actionLogPrefix} CRITICAL error during deployProject INITIATION: Name: ${errorName}, Msg: ${errorMsg}`, initialError.stack || initialError);
     
+    // If deploymentId was generated and state partially initialized, try to mark it as failed.
     if (deploymentId) { 
         const currentState = deploymentStates.get(deploymentId);
-        if (currentState && !currentState.isDone) {
+        if (currentState && !currentState.isDone) { // If state exists and not done
             addLog(deploymentId, `${actionLogPrefix} Critical initiation error: ${errorMsg}`);
             setDeploymentComplete(deploymentId, {
                 success: false,
                 message: `Critical error initializing deployment: ${errorMsg}`,
                 error: errorMsg,
-                projectName: 'unknown-project-init-fail',
+                projectName: 'unknown-project-init-fail', // Project name might not be known yet
             });
-        } else if (!currentState && deploymentId) {
-            console.error(`${actionLogPrefix} Deployment state for ${deploymentId} was not found after an initiation error. Attempting to create a failed state.`);
+        } else if (!currentState && deploymentId) { // If ID was generated but state init failed
+            console.error(`${actionLogPrefix} Deployment state for ${deploymentId} was not found after an initiation error. Attempting to create a failed state record.`);
             try {
-                initializeDeployment(deploymentId); 
+                initializeDeployment(deploymentId); // Try to init so it can be marked as failed
                 setDeploymentComplete(deploymentId, {
                     success: false,
                     message: `Critical error initializing deployment (state store issue): ${errorMsg}`,
@@ -595,17 +605,18 @@ export async function deployProject(formData: FormData): Promise<InitialDeployme
                     projectName: 'unknown-project-init-store-fail',
                 });
             } catch (storeInitError: any) {
-                console.error(`${actionLogPrefix} Failed to initialize/setComplete for deploymentId ${deploymentId} in catch block: ${extractErrorMessage(storeInitError)}`);
+                console.error(`${actionLogPrefix} Failed to initialize/setComplete for deploymentId ${deploymentId} in main catch block: ${extractErrorMessage(storeInitError)}`);
             }
         }
     }
 
+    // Return a failure response to the client
     const errorResponse: InitialDeploymentResponse = {
       success: false,
-      deploymentId: deploymentId || undefined, 
+      deploymentId: deploymentId || undefined, // Send ID if generated
       message: `Failed to initiate deployment: ${errorMsg}`,
     };
-    console.log(`${actionLogPrefix} Error, prepared to return:`, JSON.stringify(errorResponse));
+    console.log(`${actionLogPrefix} Error during initiation, prepared to return:`, JSON.stringify(errorResponse));
     return errorResponse;
   }
 }
