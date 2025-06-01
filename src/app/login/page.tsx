@@ -39,8 +39,8 @@ export default function LoginPage() {
   if (loading || (!loading && currentUser)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-black p-4">
-        <Loader2 className="h-16 w-16 animate-spin mb-6 text-white" /> {/* Ensure loader is visible on black bg */}
-        <p className="text-xl text-white">Loading session...</p> {/* Ensure text is visible */}
+        <Loader2 className="h-16 w-16 animate-spin mb-6 text-white" />
+        <p className="text-xl text-white">Loading session...</p>
       </div>
     );
   }
@@ -48,7 +48,10 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-black p-6 text-center relative">
       <div className="relative z-10 flex flex-col items-center">
-        <h1 className="text-7xl sm:text-8xl md:text-9xl font-bold tracking-tight mb-12 animate-fadeIn animated-gradient-text-fill">
+        <h1 
+          className="text-7xl sm:text-8xl md:text-9xl font-bold tracking-tight mb-12 animate-fadeIn animated-gradient-text-fill"
+          data-text="DeployEase" // Added data-text attribute
+        >
           DeployEase
         </h1>
 
