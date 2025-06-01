@@ -173,7 +173,9 @@ export function UploadCard() {
           toast({ title: "Stream Error", description: errorMessage, variant: "destructive" });
           cleanupEventSource();
           setIsProcessing(false);
-          if (!finalResult) setFinalResult({ success: false, message: errorMessage, error: errorMessage });
+          if (!finalResult) {
+            setFinalResult({ success: false, message: errorMessage, error: errorMessage });
+          }
         });
 
         es.onerror = (errorEvent) => { // For general EventSource connection failures
@@ -182,8 +184,10 @@ export function UploadCard() {
           setCurrentStatus('Stream connection failed.');
           toast({ title: "Connection Error", description: "Lost connection to the deployment stream.", variant: "destructive" });
           cleanupEventSource();
-          setIsProcessing(false);
-          if (!finalResult) setFinalResult({ success: false, message: "Connection to deployment stream lost." });
+          setIsProcessing(false); // Ensure processing state is updated
+          if (!finalResult) { // Set final result if not already set by a 'complete' event
+             setFinalResult({ success: false, message: "Connection to deployment stream lost or server error." });
+          }
         };
 
       } else {
