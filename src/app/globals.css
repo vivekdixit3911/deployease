@@ -102,42 +102,30 @@
   }
 }
 
-@keyframes animatedSparkleGradient {
+@keyframes animatedTextGradient { /* Renamed for clarity, can reuse logic */
   0% { background-position: 0% 50%; }
   50% { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
 }
 
-@keyframes subtleSparkles {
-  0%, 100% { opacity: 0.2; } /* Made sparkles more subtle */
-  50% { opacity: 0.5; }
+.animated-gradient-text-fill {
+  background: linear-gradient(
+    270deg,
+    hsl(0, 100%, 60%),   /* Bright Red */
+    hsl(30, 100%, 55%),  /* Bright Orange */
+    hsl(60, 100%, 50%),  /* Bright Yellow */
+    hsl(120, 100%, 50%), /* Bright Green */
+    hsl(180, 100%, 50%), /* Bright Cyan */
+    hsl(240, 100%, 60%), /* Bright Blue */
+    hsl(270, 100%, 55%), /* Bright Purple */
+    hsl(300, 100%, 55%), /* Bright Magenta */
+    hsl(0, 100%, 60%)    /* Loop back to Red for smoother animation */
+  );
+  background-size: 400% 400%; /* Increased size for smoother, more expansive movement */
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-fill-color: transparent; /* Standard property */
+  animation: animatedTextGradient 20s ease infinite; /* Slower, more majestic animation */
+  display: inline-block; /* Helps with background-clip:text on block elements */
 }
-
-.sparkling-gradient-background {
-  position: relative; 
-  overflow: hidden; 
-  background: linear-gradient(270deg, hsl(var(--background)), #111, #0a0a0a, #1a1a1a); /* Using theme background and darker grays */
-  background-size: 600% 600%; /* Increased size for smoother animation */
-  animation: animatedSparkleGradient 20s ease infinite; /* Slower animation */
-}
-
-.sparkling-gradient-background::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-image: 
-    radial-gradient(circle, hsla(var(--foreground), 0.1) 0.5px, transparent 0.5px), /* Finer sparkles */
-    radial-gradient(circle, hsla(var(--foreground), 0.05) 1px, transparent 1px); /* Slightly larger, fainter sparkles */
-  background-size: 
-    30px 30px, /* Size for finer sparkles */
-    50px 50px;  /* Size for larger sparkles */
-  background-position: 0 0, 15px 15px; /* Offset the second layer */
-  opacity: 0.4; /* Overall opacity for the sparkle layer */
-  animation: subtleSparkles 6s ease-in-out infinite alternate; /* Alternate direction for variety */
-  pointer-events: none; 
-}
-
-/* Removed ::after for simplicity, ::before can handle multiple radial gradients */
