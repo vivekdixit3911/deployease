@@ -8,12 +8,12 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { deployProject } from '@/app/actions';
-import { UploadCloud, Loader2, CheckCircle, XCircle, FileText, Zap, Link as LinkIcon } from 'lucide-react';
+import { UploadCloud, Loader2, CheckCircle, XCircle, FileText, Link as LinkIcon } from 'lucide-react'; // Removed Zap icon
 import { Progress } from '@/components/ui/progress'; 
 
 interface DeploymentStatus {
   projectName?: string;
-  framework?: string;
+  // framework?: string; // Framework info no longer shown in UI
   deployedUrl?: string;
   logs?: string;
   message: string;
@@ -33,6 +33,7 @@ export function UploadCard() {
       if (files[0].type === 'application/zip' || files[0].type === 'application/x-zip-compressed') {
         setFile(files[0]);
         setStatus(null); // Reset status on new file selection
+        setProgress(0); // Reset progress
       } else {
         toast({
           title: "Invalid File Type",
@@ -67,33 +68,50 @@ export function UploadCard() {
 
     
     const progressInterval = setInterval(() => {
-      setProgress(prev => (prev < 80 ? prev + 10 : prev));
-    }, 500);
+      setProgress(prev => (prev < 80 ? prev + 5 : (prev < 95 ? prev + 1 : prev))); // Slower progress towards the end
+    }, 300);
 
-    const result = await deployProject(formData);
+    try {
+      const result = await deployProject(formData);
     
-    clearInterval(progressInterval);
-    setProgress(100);
-    setIsLoading(false);
-    setStatus({
-      message: result.message,
-      projectName: result.projectName,
-      framework: result.framework,
-      deployedUrl: result.deployedUrl,
-      logs: result.logs,
-    });
-
-    if (result.success) {
-      toast({
-        title: "Deployment Successful",
-        description: result.message,
+      clearInterval(progressInterval);
+      setProgress(100);
+      setIsLoading(false);
+      setStatus({
+        message: result.message,
+        projectName: result.projectName,
+        // framework: result.framework, // No longer setting framework for UI
+        deployedUrl: result.deployedUrl,
+        logs: result.logs,
       });
-    } else {
+
+      if (result.success) {
+        toast({
+          title: "Deployment Successful",
+          description: result.message,
+        });
+      } else {
+        toast({
+          title: "Deployment Failed",
+          description: result.message || "An unknown error occurred during deployment.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      clearInterval(progressInterval);
+      setProgress(100); // Mark as complete even on error
+      setIsLoading(false);
+      const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
+      setStatus({
+        message: `Deployment failed: ${errorMessage}`,
+        logs: status?.logs // Preserve existing logs if any
+      });
       toast({
-        title: "Deployment Failed",
-        description: result.message,
+        title: "Deployment Error",
+        description: errorMessage,
         variant: "destructive",
       });
+      console.error("Deployment handleSubmit error:", error);
     }
   };
 
@@ -102,7 +120,7 @@ export function UploadCard() {
       <CardHeader>
         <CardTitle className="text-3xl font-headline text-center">Deploy Your Project</CardTitle>
         <CardDescription className="text-center">
-          Upload a ZIP file of your React or static website. We&apos;ll handle the rest!
+          Upload a ZIP file of your web project. We&apos;ll handle the rest!
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -125,7 +143,7 @@ export function UploadCard() {
             <Input
               id="zipfile"
               type="file"
-              accept=".zip"
+              accept=".zip,application/zip,application/x-zip-compressed"
               ref={fileInputRef}
               onChange={handleFileChange}
               className="hidden" 
@@ -153,10 +171,10 @@ export function UploadCard() {
         {status && !isLoading && (
           <div className="mt-8 p-6 bg-card rounded-lg shadow border">
             <h3 className="text-xl font-semibold mb-4 flex items-center">
-              {status.projectName || status.deployedUrl ? <CheckCircle className="h-6 w-6 text-accent mr-2" /> : <XCircle className="h-6 w-6 text-destructive mr-2" />}
+              {status.projectName || status.deployedUrl ? <CheckCircle className="h-6 w-6 text-green-500 mr-2" /> : <XCircle className="h-6 w-6 text-red-500 mr-2" />}
               Deployment Status
             </h3>
-            <p className={`text-lg ${status.projectName || status.deployedUrl ? 'text-accent-foreground' : 'text-destructive-foreground'}`}>
+            <p className={`text-lg ${status.projectName || status.deployedUrl ? 'text-foreground' : 'text-destructive-foreground'}`}>
               {status.message}
             </p>
             {status.projectName && (
@@ -165,12 +183,7 @@ export function UploadCard() {
                 Project Name: <span className="font-semibold ml-1">{status.projectName}</span>
               </p>
             )}
-            {status.framework && (
-              <p className="mt-1 text-sm flex items-center">
-                <Zap className="h-4 w-4 mr-2 text-primary" />
-                Detected Framework: <span className="font-semibold ml-1">{status.framework}</span>
-              </p>
-            )}
+            {/* Framework display removed from here */}
             {status.deployedUrl && (
               <p className="mt-3 text-sm">
                 <a
@@ -197,9 +210,10 @@ export function UploadCard() {
       </CardContent>
       <CardFooter>
         <p className="text-xs text-muted-foreground text-center w-full">
-          DeployEase uses AI to suggest project names and detect frameworks.
+          The system automatically detects frameworks to process your project.
         </p>
       </CardFooter>
     </Card>
   );
 }
+

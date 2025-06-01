@@ -11,14 +11,11 @@ import mime from 'mime-types';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, OLA_S3_BUCKET_NAME } from '@/lib/s3Client';
 import { TEMP_UPLOAD_DIR } from '@/config/constants';
-// AI Imports are no longer needed
-// import { suggestProjectName } from '@/ai/flows/suggest-project-name';
-// import { detectFramework, DetectFrameworkInput, DetectFrameworkOutput } from '@/ai/flows/detect-framework';
 
 const execAsync = promisify(exec);
 
 interface FrameworkDetectionResult {
-  framework: 'react' | 'static';
+  framework: string; // e.g., 'nextjs', 'cra', 'vite', 'remix', 'astro', 'sveltekit', 'nuxtjs', 'static'
   build_command?: string;
   output_directory?: string;
   reasoning?: string;
@@ -28,7 +25,7 @@ interface DeploymentResult {
   success: boolean;
   message: string;
   projectName?: string;
-  framework?: FrameworkDetectionResult['framework'];
+  framework?: FrameworkDetectionResult['framework']; // This will still be returned, just not shown in UI
   build_command?: string;
   output_directory?: string;
   deployedUrl?: string;
@@ -83,7 +80,7 @@ async function uploadDirectoryRecursiveS3(
 }
 
 const sanitizeName = (name: string | undefined | null): string => {
-  if (!name) return '';
+  if (!name) return 'untitled-project';
   return name
     .trim()
     .replace(/\.zip$/i, '') // Remove .zip extension
@@ -91,7 +88,7 @@ const sanitizeName = (name: string | undefined | null): string => {
     .replace(/[^a-zA-Z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .toLowerCase();
+    .toLowerCase() || 'untitled-project';
 };
 
 function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyzed: string, logsRef: { value: string }): FrameworkDetectionResult {
@@ -102,28 +99,60 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
       const dependencies = { ...pkg.dependencies, ...pkg.devDependencies };
       const scripts = pkg.scripts || {};
 
+      // Higher specificity frameworks first
       if (dependencies.next) {
-        logsRef.value += "Detected Next.js (dependency found).\n";
-        return { framework: 'react', build_command: scripts['build:next'] || scripts.build || 'npm run build', output_directory: '.next', reasoning: "Next.js dependency found." };
-      }
-      if (dependencies['react-scripts']) {
-        logsRef.value += "Detected Create React App (react-scripts dependency found).\n";
-        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'build', reasoning: "Create React App (react-scripts) dependency found." };
-      }
-      if (dependencies.vite && (dependencies['@vitejs/plugin-react'] || dependencies['@vitejs/plugin-react-swc'])) {
-        logsRef.value += "Detected Vite with React (dependencies found).\n";
-        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'dist', reasoning: "Vite with React plugin detected." };
+        logsRef.value += "Detected Next.js.\n";
+        const buildScript = scripts['build:next'] || scripts.build || 'next build';
+        return { framework: 'nextjs', build_command: buildScript, output_directory: '.next', reasoning: "Next.js dependency found." };
       }
       if (dependencies['@remix-run/dev'] || dependencies.remix) {
-        logsRef.value += "Detected Remix (dependency found).\n";
-        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'public/build', reasoning: "Remix dependency found." };
+        logsRef.value += "Detected Remix.\n";
+        const buildScript = scripts.build || 'remix build';
+        return { framework: 'remix', build_command: buildScript, output_directory: 'public/build', reasoning: "Remix dependency found." };
       }
+       if (dependencies['@sveltejs/kit']) {
+        logsRef.value += "Detected SvelteKit.\n";
+        // SvelteKit uses Vite for build, often `vite build` or a custom script
+        const buildScript = scripts.build || 'vite build';
+        return { framework: 'sveltekit', build_command: buildScript, output_directory: 'build', reasoning: "SvelteKit dependency found." };
+      }
+      if (dependencies.nuxt) {
+        logsRef.value += "Detected Nuxt.js.\n";
+        const buildScript = scripts.build || 'nuxt build';
+        // Nuxt 3 default output is .output/public, Nuxt 2 might be dist
+        // For simplicity, let's assume .output/public is more common for uploads
+        return { framework: 'nuxtjs', build_command: buildScript, output_directory: '.output/public', reasoning: "Nuxt.js dependency found." };
+      }
+      if (dependencies.astro) {
+        logsRef.value += "Detected Astro.\n";
+        const buildScript = scripts.build || 'astro build';
+        return { framework: 'astro', build_command: buildScript, output_directory: 'dist', reasoning: "Astro dependency found." };
+      }
+      // General Vite with React (check after more specific Vite-based frameworks like SvelteKit)
+      if (dependencies.vite && (dependencies['@vitejs/plugin-react'] || dependencies['@vitejs/plugin-react-swc'])) {
+        logsRef.value += "Detected Vite with React.\n";
+        const buildScript = scripts.build || 'vite build';
+        return { framework: 'vite-react', build_command: buildScript, output_directory: 'dist', reasoning: "Vite with React plugin detected." };
+      }
+      if (dependencies['react-scripts']) {
+        logsRef.value += "Detected Create React App.\n";
+        const buildScript = scripts.build || 'npm run build'; // CRA often uses "npm run build"
+        return { framework: 'cra', build_command: buildScript, output_directory: 'build', reasoning: "Create React App (react-scripts) dependency found." };
+      }
+      // Generic React (if not caught by CRA or Vite+React)
       if (dependencies.react && dependencies['react-dom']) {
-        logsRef.value += "Detected Generic React (react and react-dom dependencies found).\n";
-        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'dist', reasoning: "Found react and react-dom in dependencies." };
+        logsRef.value += "Detected Generic React project.\n";
+        const buildScript = scripts.build || 'npm run build'; // A common default
+        return { framework: 'generic-react', build_command: buildScript, output_directory: 'dist', reasoning: "Generic React (react and react-dom) dependencies found." };
       }
-      logsRef.value += "package.json found, but no clear React indicators. Assuming static.\n";
-      return { framework: 'static', reasoning: "package.json present but no specific React framework indicators found." };
+
+      logsRef.value += "package.json found, but no clear common framework indicators. Assuming static or custom Node.js build.\n";
+      // If build script exists, assume it's a buildable project but output dir is unknown.
+      // If it's a Node.js backend, it might not have a typical frontend build output dir.
+      if (scripts.build) {
+        return { framework: 'custom-build', build_command: scripts.build, output_directory: 'dist', reasoning: "package.json with a build script, but unrecognized framework. Assuming 'dist' output." };
+      }
+      return { framework: 'static', reasoning: "package.json present but no specific framework indicators or standard build script found." };
     } catch (e) {
       logsRef.value += `Error parsing package.json: ${(e as Error).message}. Assuming static.\n`;
       return { framework: 'static', reasoning: "Failed to parse package.json." };
@@ -134,13 +163,13 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
   }
   
   logsRef.value += "No package.json or index.html found for analysis. Assuming static.\n";
-  return { framework: 'static', reasoning: "No definitive project files (package.json, index.html) found." };
+  return { framework: 'static', reasoning: "No definitive project files (package.json, index.html) found for analysis." };
 }
 
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
   const file = formData.get('zipfile') as File | null;
-  const logsRef = { value: '' };
+  let logsRef = { value: '' }; // Initialize logsRef here
 
   if (!file) {
     return { success: false, message: 'No file uploaded.' };
@@ -161,11 +190,12 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   let finalProjectName = 'untitled-project';
   
   try {
+    // Critical setup steps moved inside the main try block
     if (!OLA_S3_BUCKET_NAME) {
         logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
         throw new Error('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); 
+    s3Client(); // This can throw if S3 client config is bad (e.g. endpoint invalid)
     logsRef.value += 'S3 client initialized and configuration seems present.\n';
 
     await ensureDirectoryExists(TEMP_UPLOAD_DIR); 
@@ -214,7 +244,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       finalProjectName = fileBasedName;
       logsRef.value += `Using file-based name: ${finalProjectName}\n`;
     } else {
-      finalProjectName = 'web-deployment'; // Default if sanitized filename is too short
+      finalProjectName = 'web-deployment-' + uniqueId.substring(0,5) ; // Default if sanitized filename is too short, add some uniqueness
       logsRef.value += `File-based name unsuitable or too short. Using default name: ${finalProjectName}\n`;
     }
     
@@ -237,7 +267,13 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           } else if (entry.name.toLowerCase() === 'package.json') {
             packageJsonPaths.push(relativeToExtraction);
           } else if (entry.name.toLowerCase() === 'index.html') {
-            if (!relativeToExtraction.includes('/build/') && !relativeToExtraction.includes('/dist/') && !relativeToExtraction.includes('/out/') && !relativeToExtraction.includes('/node_modules/')) {
+            // Be more selective about index.html to avoid picking one from a build/dist dir of a nested project
+            if (!relativeToExtraction.includes('/build/') && 
+                !relativeToExtraction.includes('/dist/') && 
+                !relativeToExtraction.includes('/.next/') &&
+                !relativeToExtraction.includes('/.output/') &&
+                !relativeToExtraction.includes('/out/') &&
+                !relativeToExtraction.includes('/node_modules/')) {
                 indexHtmlPaths.push(relativeToExtraction);
             }
           }
@@ -278,9 +314,18 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         
     logsRef.value += `Detected framework: ${frameworkDetectionResult.framework}\n`;
     logsRef.value += `Reasoning: ${frameworkDetectionResult.reasoning || 'N/A'}\n`;
-    if (frameworkDetectionResult.framework === 'react') {
-      logsRef.value += `Build command: ${frameworkDetectionResult.build_command || 'N/A'}\n`;
-      logsRef.value += `Output directory: ${frameworkDetectionResult.output_directory || 'N/A'}\n`;
+
+    const isReactBasedFramework = ![
+        'static', 
+        'custom-build' // custom-build implies a build script but unknown output, treat as potentially needing build.
+    ].includes(frameworkDetectionResult.framework);
+
+    // For any framework that is not 'static', we assume it needs a build step if build_command is present.
+    const needsBuild = frameworkDetectionResult.framework !== 'static' && frameworkDetectionResult.build_command;
+
+    if (needsBuild) {
+      logsRef.value += `Build command: ${frameworkDetectionResult.build_command}\n`;
+      logsRef.value += `Expected output directory (relative to project root): ${frameworkDetectionResult.output_directory || 'N/A'}\n`;
     }
 
 
@@ -288,59 +333,76 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     logsRef.value += `Final detected framework for build process: ${frameworkDetectionResult.framework}\n`;
     logsRef.value += `Project root path for build/upload: ${projectRootPath}\n`;
 
-    if (frameworkDetectionResult.framework === 'react') {
-      logsRef.value += `React project detected. Starting build process in ${projectRootPath}...\n`;
+    if (needsBuild && frameworkDetectionResult.build_command) {
+      logsRef.value += `Project needs build. Starting build process in ${projectRootPath}...\n`;
       try {
         logsRef.value += `Running 'npm install' in ${projectRootPath}...\n`;
         const installOutput = await execAsync('npm install', { cwd: projectRootPath });
         logsRef.value += `npm install stdout:\n${installOutput.stdout || 'N/A'}\n`;
         if (installOutput.stderr) logsRef.value += `npm install stderr:\n${installOutput.stderr}\n`;
 
-        const buildCommand = frameworkDetectionResult.build_command || 'npm run build'; 
+        const buildCommand = frameworkDetectionResult.build_command; 
         logsRef.value += `Running build command: '${buildCommand}' in ${projectRootPath}...\n`;
         const buildOutput = await execAsync(buildCommand, { cwd: projectRootPath });
         logsRef.value += `Build command stdout:\n${buildOutput.stdout || 'N/A'}\n`;
         if (buildOutput.stderr) logsRef.value += `Build command stderr:\n${buildOutput.stderr}\n`;
 
-        const suggestedOutputDir = frameworkDetectionResult.output_directory;
-        // Use a more flexible set of default output dirs if non-AI detection doesn't provide one
-        const defaultOutputDirs = ['build', 'dist', 'out', '.next']; 
-        const outputDirsToTry = suggestedOutputDir ? [suggestedOutputDir, ...defaultOutputDirs.filter(d => d !== suggestedOutputDir)] : defaultOutputDirs;
+        const detectedOutputDir = frameworkDetectionResult.output_directory;
         
         let buildSourcePath = ''; 
-        for (const dir of outputDirsToTry) {
-          const potentialPath = path.join(projectRootPath, dir);
-          try {
-            await fs.access(potentialPath); 
-             if ((await fs.stat(potentialPath)).isDirectory()) { 
-                buildSourcePath = potentialPath;
-                logsRef.value += `Found build output directory at: ${buildSourcePath}\n`;
-                break;
-            }
-          } catch { /* Directory does not exist or not accessible */ }
+        if (detectedOutputDir) {
+            const potentialPath = path.join(projectRootPath, detectedOutputDir);
+            try {
+                await fs.access(potentialPath);
+                if ((await fs.stat(potentialPath)).isDirectory()) {
+                    buildSourcePath = potentialPath;
+                    logsRef.value += `Found build output directory at: ${buildSourcePath}\n`;
+                }
+            } catch { /* Directory does not exist or not accessible */ }
         }
 
+
         if (!buildSourcePath) {
-          logsRef.value += `Error: Build output directory (tried: ${outputDirsToTry.join(', ')}) not found in ${projectRootPath} after build. Listing directory contents of ${projectRootPath}:\n`;
+          // Fallback for common output dirs if specific one not found or not provided
+          const defaultOutputDirs = ['build', 'dist', 'out', '.next', '.output/public', 'public/build'];
+          for (const dir of defaultOutputDirs) {
+            if (detectedOutputDir === dir && buildSourcePath) continue; // Already checked if detectedOutputDir was set
+            const potentialPath = path.join(projectRootPath, dir);
+            try {
+              await fs.access(potentialPath); 
+               if ((await fs.stat(potentialPath)).isDirectory()) { 
+                  buildSourcePath = potentialPath;
+                  logsRef.value += `Found build output directory (fallback search) at: ${buildSourcePath}\n`;
+                  // Update frameworkDetectionResult if we found a better output_directory through fallback
+                  frameworkDetectionResult.output_directory = dir;
+                  break;
+              }
+            } catch { /* Directory does not exist or not accessible */ }
+          }
+        }
+        
+
+        if (!buildSourcePath) {
+          logsRef.value += `Error: Build output directory (expected: ${detectedOutputDir || 'N/A'}, also tried fallbacks) not found in ${projectRootPath} after build. Listing directory contents of ${projectRootPath}:\n`;
           try {
             const rootContents = await fs.readdir(projectRootPath, {withFileTypes: true});
             logsRef.value += rootContents.map(entry => `${entry.name}${entry.isDirectory() ? '/' : ''}`).join(', ') + '\n';
           } catch(e: any) { logsRef.value += `Could not list contents of ${projectRootPath}: ${(e as Error).message}\nStack: ${(e as Error).stack}\n`; }
-          throw new Error('Build output directory not found. Check build scripts and output configuration.');
+          throw new Error(`Build output directory not found (expected '${detectedOutputDir || 'various defaults'}'). Check build scripts and output configuration.`);
         }
         
-        logsRef.value += `Uploading React build files from ${buildSourcePath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
+        logsRef.value += `Uploading built files from ${buildSourcePath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
         await uploadDirectoryRecursiveS3(buildSourcePath, s3ProjectBaseKey, logsRef);
-        logsRef.value += `React build files uploaded successfully to S3.\n`;
+        logsRef.value += `Built files uploaded successfully to S3.\n`;
 
       } catch (buildError: any) {
-        logsRef.value += `React build process failed: ${buildError.message}\n`;
+        logsRef.value += `Build process failed: ${buildError.message}\n`;
         if (buildError.stdout) logsRef.value += `Build stdout:\n${buildError.stdout}\n`;
         if (buildError.stderr) logsRef.value += `Build stderr:\n${buildError.stderr}\n`;
         if (buildError.stack) logsRef.value += `Build stack:\n${buildError.stack}\n`;
         return { 
             success: false, 
-            message: `React build process failed: ${buildError.message}`, 
+            message: `Build process failed: ${buildError.message}`, 
             logs: logsRef.value, 
             projectName: finalProjectName, 
             framework: frameworkDetectionResult.framework,
@@ -349,7 +411,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         };
       }
     } else { 
-      logsRef.value += `Static site detected. Uploading files from ${projectRootPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
+      // This is for 'static' frameworks or if 'needsBuild' is false
+      logsRef.value += `Static site or no build needed. Uploading files from ${projectRootPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
       await uploadDirectoryRecursiveS3(projectRootPath, s3ProjectBaseKey, logsRef);
       logsRef.value += `Static files uploaded successfully to S3.\n`;
     }
@@ -387,8 +450,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         success: false, 
         message: `Deployment failed. ${detailedErrorMessage}`,
         logs: logsRef.value,
-        projectName: finalProjectName,
-        framework: frameworkDetectionResult?.framework, // It might be undefined if error happens before it's set
+        projectName: finalProjectName, // Use the determined name
+        framework: frameworkDetectionResult?.framework,
         build_command: frameworkDetectionResult?.build_command,
         output_directory: frameworkDetectionResult?.output_directory
     };
@@ -413,3 +476,4 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
   }
 }
+
