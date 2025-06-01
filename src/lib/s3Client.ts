@@ -28,7 +28,7 @@ if (!OLA_S3_BUCKET_NAME) {
 }
 
 
-class MissingS3ConfigError extends Error {
+export class MissingS3ConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "MissingS3ConfigError";
