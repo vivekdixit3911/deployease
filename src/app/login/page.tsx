@@ -4,7 +4,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { signInWithPopup, type AuthProvider as FirebaseAuthProvider } from 'firebase/auth';
-import { auth, googleProvider, githubProvider } from '@/lib/firebase';
+import { auth, googleProvider, githubProvider, firebaseConfig } from '@/lib/firebase'; // Import firebaseConfig
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Chrome, GithubIcon, Loader2 } from 'lucide-react';
@@ -30,13 +30,13 @@ export default function LoginPage() {
       console.error("Sign in error:", error);
       let description = error.message || "An unexpected error occurred during sign-in.";
       if (error.code === 'auth/unauthorized-domain') {
-        description = "This app's domain is not authorized for Firebase sign-in. Please check your Firebase console settings (Authentication > Sign-in method > Authorized domains) and add localhost if developing locally. Details: " + error.message;
+        description = `This app's domain is not authorized for Firebase sign-in. Please ensure 'localhost' is an authorized domain for Firebase project ID: '${firebaseConfig.projectId}'. Check Authentication > Sign-in method > Authorized domains in your Firebase console. Details: ${error.message}`;
       }
       toast({
         title: "Sign In Failed",
         description: description,
         variant: "destructive",
-        duration: 9000, // Longer duration for critical errors
+        duration: 9000, 
       });
     }
   };
