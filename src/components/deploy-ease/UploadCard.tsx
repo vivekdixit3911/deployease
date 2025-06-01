@@ -1,4 +1,3 @@
-
 // src/components/deploy-ease/UploadCard.tsx
 'use client';
 
@@ -9,10 +8,12 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 import { deployProject, type DeploymentResult } from '@/app/actions';
-import { UploadCloud, Loader2, CheckCircle, XCircle, FileText, Link as LinkIcon, Github, ListChecks, AlertTriangle } from 'lucide-react';
+import { UploadCloud, Loader2, CheckCircle, XCircle, FileText, Link as LinkIcon, Github, ListChecks, AlertTriangle, ShieldAlert } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { useAuth } from '@/contexts/AuthContext'; // Import useAuth
+import Link from 'next/link';
 
 export function UploadCard() {
   const [file, setFile] = useState<File | null>(null);
@@ -23,16 +24,15 @@ export function UploadCard() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const { currentUser, loading: authLoading } = useAuth(); // Get user from AuthContext
 
   const displayedLogs = deploymentResult?.logs || [];
 
   useEffect(() => {
     if (displayedLogs.length > 0 && logsEndRef.current) {
-        // A short delay can help ensure the scroll area has rendered the new logs
         setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }), 100);
     }
   }, [displayedLogs]);
-
 
   const resetState = () => {
     setFile(null);
@@ -49,11 +49,10 @@ export function UploadCard() {
     const files = event.target.files;
     if (files && files[0]) {
       const selectedFile = files[0];
-      // Basic client-side check for .zip extension. Server will do more robust validation.
       if (selectedFile.name.toLowerCase().endsWith('.zip')) {
         setFile(selectedFile);
         setGithubUrl(''); 
-        setDeploymentResult(null); // Reset previous results
+        setDeploymentResult(null); 
       } else {
         toast({
           title: "Invalid File Type",
@@ -70,14 +69,20 @@ export function UploadCard() {
     if (isProcessing) return;
     setGithubUrl(event.target.value);
     if (event.target.value) { 
-      setFile(null); // Clear file if URL is entered
+      setFile(null); 
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-    setDeploymentResult(null); // Reset previous results
+    setDeploymentResult(null); 
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    if (!currentUser) {
+      toast({ title: "Authentication Required", description: "Please sign in to deploy projects.", variant: "destructive" });
+      return;
+    }
+
     if (!file && !githubUrl) {
       toast({ title: "No Input", description: "Please select a ZIP file or enter a GitHub URL.", variant: "destructive" });
       return;
@@ -92,31 +97,30 @@ export function UploadCard() {
     }
     
     setIsProcessing(true);
-    setDeploymentResult(null); // Clear previous results before starting
+    setDeploymentResult(null); 
 
     const formData = new FormData();
     if (file) {
       formData.append('zipfile', file);
-      console.log("[CLIENT] Appending file to FormData:", file.name, file.type, file.size);
     } else if (githubUrl) {
       formData.append('githubUrl', githubUrl);
-      console.log("[CLIENT] Appending githubUrl to FormData:", githubUrl);
     }
+    // TODO: For true user-specific deployments, you'd pass an ID token or similar.
+    // const idToken = await currentUser.getIdToken();
+    // formData.append('idToken', idToken); 
+    // For now, the action uses a hardcoded userId.
 
     try {
-      console.log("[CLIENT] Calling deployProject server action...");
       const result = await deployProject(formData);
-      console.log("[CLIENT] deployProject action returned:", result);
-
-      // Ensure result has the expected structure, even if server had an issue
+      
       if (typeof result?.success === 'undefined' || !result?.logs || !Array.isArray(result.logs)) {
         console.error("[CLIENT] Received unexpected response structure from server:", result);
         const augmentedResult: DeploymentResult = {
             success: false,
             message: "An unexpected response was received from the server.",
-            error: "Server response was malformed or incomplete.",
+            error: typeof result?.error === 'string' ? result.error : "Server response was malformed or incomplete.",
             logs: result?.logs && Array.isArray(result.logs) ? result.logs : ['Client Error: Server response structure was invalid.'],
-            projectName: result?.projectName || (file?.name ? file.name.replace('.zip', '') : githubUrl ? githubUrl.split('/').pop()?.replace('.git', '') : 'unknown')
+            projectName: typeof result?.projectName === 'string' ? result.projectName : (file?.name ? file.name.replace('.zip', '') : githubUrl ? githubUrl.split('/').pop()?.replace('.git', '') : 'unknown')
         };
         setDeploymentResult(augmentedResult);
         toast({
@@ -129,7 +133,7 @@ export function UploadCard() {
         setDeploymentResult(result);
         toast({
           title: result.success ? "Deployment Successful" : "Deployment Failed",
-          description: result.message, // This should be the user-friendly message
+          description: result.message,
           variant: result.success ? "default" : "destructive",
           duration: result.success ? 5000 : 9000,
         });
@@ -151,16 +155,46 @@ export function UploadCard() {
     }
   };
 
+  if (authLoading) {
+    return (
+      <Card className="w-full max-w-2xl shadow-xl p-10 text-center">
+        <Loader2 className="h-10 w-10 animate-spin text-primary mx-auto mb-4" />
+        <p>Loading user session...</p>
+      </Card>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <Card className="w-full max-w-2xl shadow-xl">
+        <CardHeader>
+          <CardTitle className="text-3xl font-headline text-center">DeployEase</CardTitle>
+        </CardHeader>
+        <CardContent className="text-center p-10">
+          <ShieldAlert className="h-16 w-16 text-destructive mx-auto mb-4" />
+          <h3 className="text-xl font-semibold mb-2">Authentication Required</h3>
+          <p className="text-muted-foreground mb-6">
+            Please sign in to deploy your projects.
+          </p>
+          <Button asChild>
+            <Link href="/login">Sign In</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+
   return (
     <Card className="w-full max-w-2xl shadow-xl">
       <CardHeader>
-        <CardTitle className="text-3xl font-headline text-center">DeployEase</CardTitle>
+        <CardTitle className="text-3xl font-headline text-center">Deploy Your Project</CardTitle>
         <CardDescription className="text-center">
-          Upload a ZIP or provide a GitHub URL for deployment.
+          Upload a ZIP or provide a GitHub URL. Welcome, {currentUser.displayName || currentUser.email}!
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {!isProcessing && !deploymentResult && ( // Show form only if not processing and no result yet
+        {!isProcessing && !deploymentResult && (
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <Label htmlFor="zipfile" className="text-lg font-medium">Upload Project ZIP File</Label>
