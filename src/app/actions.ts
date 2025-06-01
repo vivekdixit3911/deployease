@@ -20,7 +20,7 @@ interface DeploymentResult {
   success: boolean;
   message: string;
   projectName?: string;
-  framework?: string;
+  framework?: DetectFrameworkOutput['framework'];
   build_command?: string;
   output_directory?: string;
   deployedUrl?: string;
@@ -100,7 +100,13 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   let tempZipPath = '';
   let extractionPath = ''; 
   let projectRootPath = ''; 
-  let frameworkDetectionResult: DetectFrameworkOutput = { framework: 'static', confidence: 0, reasoning: "Initial value" };
+  let frameworkDetectionResult: DetectFrameworkOutput = { 
+    framework: 'static', 
+    confidence: 0, 
+    reasoning: "Initial value",
+    build_command: undefined,
+    output_directory: undefined
+  };
   const minNameLength = 3;
   let finalProjectName = 'untitled-project';
   
@@ -154,7 +160,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       aiSuggestion = sanitizeName(nameSuggestionOutput.projectName);
       logsRef.value += `AI suggested name (raw: "${nameSuggestionOutput.projectName}", sanitized: "${aiSuggestion}")\n`;
     } catch (error) {
-      logsRef.value += `AI project name suggestion failed: ${(error as Error).message}\n`;
+      logsRef.value += `AI project name suggestion failed: ${(error as Error).message}. Using fallback.\n`;
+      aiSuggestion = 'untitled-project'; // Fallback
     }
 
     const uploadedFileNameWithoutExtension = file.name.replace(/\.zip$/i, '');
@@ -168,6 +175,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       finalProjectName = fileBasedName;
       logsRef.value += `AI name unsuitable or unavailable. Using file-based name: ${finalProjectName}\n`;
     } else {
+      finalProjectName = 'untitled-project'; // Ensure it's set if other conditions fail
       logsRef.value += `Both AI and file-based names are unsuitable or too short. Using default name: ${finalProjectName}\n`;
     }
     
@@ -190,8 +198,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           } else if (entry.name.toLowerCase() === 'package.json') {
             packageJsonPaths.push(relativeToExtraction);
           } else if (entry.name.toLowerCase() === 'index.html') {
-            // Avoid index.html inside common build/dist folders if other options exist
-            if (!relativeToExtraction.includes('/build/') && !relativeToExtraction.includes('/dist/') && !relativeToExtraction.includes('/out/')) {
+            if (!relativeToExtraction.includes('/build/') && !relativeToExtraction.includes('/dist/') && !relativeToExtraction.includes('/out/') && !relativeToExtraction.includes('/node_modules/')) {
                 indexHtmlPaths.push(relativeToExtraction);
             }
           }
@@ -212,15 +219,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
          projectRootPath = path.join(baseExtractionPath, path.dirname(chosenFile));
          return { filePath: path.join(baseExtractionPath, chosenFile), content: await fs.readFile(path.join(baseExtractionPath, chosenFile), 'utf-8'), relativePath: chosenFile };
       }
-      projectRootPath = baseExtractionPath; // Default if nothing specific found
+      projectRootPath = baseExtractionPath; 
       return { filePath: null, content: null, relativePath: null };
     };
 
     const analysisResult = await findAnalysisFile(extractionPath, extractionPath);
     analysisFileRelativePath = analysisResult.relativePath;
     analysisFileContent = analysisResult.content;
-    // projectRootPath is set by findAnalysisFile
-
+    
     if (analysisFileRelativePath && analysisFileContent) {
         frameworkInput = { fileContents: analysisFileContent, fileNameAnalyzed: analysisFileRelativePath };
         logsRef.value += `Framework detection input: content of '${analysisFileRelativePath}'. Project root set to: ${projectRootPath}\n`;
@@ -240,8 +246,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         logsRef.value += `AI Suggested output directory: ${frameworkDetectionResult.output_directory || 'N/A'}\n`;
       }
     } catch (aiError: any) {
-      logsRef.value += `AI framework detection failed: ${(aiError as Error).message}. Stack: ${aiError.stack}. Assuming 'static' due to error.\n`;
-      frameworkDetectionResult = { framework: 'static', confidence: 0.1, reasoning: "AI detection failed, defaulted to static" };
+      logsRef.value += `AI framework detection failed: ${(aiError as Error).message}. Stack: ${aiError.stack || 'N/A'}. Assuming 'static' due to error.\n`;
+      frameworkDetectionResult = { 
+        framework: 'static', 
+        confidence: 0.1, 
+        reasoning: "AI detection failed, defaulted to static",
+        build_command: undefined,
+        output_directory: undefined
+      };
     }
 
     const s3ProjectBaseKey = `sites/${finalProjectName}`; 
@@ -263,7 +275,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         if (buildOutput.stderr) logsRef.value += `Build command stderr:\n${buildOutput.stderr}\n`;
 
         const suggestedOutputDir = frameworkDetectionResult.output_directory;
-        const defaultOutputDirs = ['build', 'dist', 'out', '.next']; // .next added as common Next.js output
+        const defaultOutputDirs = ['build', 'dist', 'out', '.next']; 
         const outputDirsToTry = suggestedOutputDir ? [suggestedOutputDir, ...defaultOutputDirs.filter(d => d !== suggestedOutputDir)] : defaultOutputDirs;
         
         let buildSourcePath = ''; 
@@ -373,3 +385,4 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
   }
 }
+
