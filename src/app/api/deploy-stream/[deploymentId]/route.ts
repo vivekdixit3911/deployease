@@ -26,7 +26,7 @@ export async function GET(
         headers: { 'Content-Type': 'application/json' } 
       });
     }
-    console.log(`[SSE:${deploymentId}] Deployment ID validated. Preparing stream.`);
+    console.log(`[SSE:${deploymentId}] Deployment ID validated. Preparing stream for project: ${initialDeploymentState.projectName || 'Unknown'}.`);
 
 
     const stream = new ReadableStream({
@@ -38,22 +38,26 @@ export async function GET(
 
         const sendEvent = (event: string, data: any) => {
           if (clientClosed || controller.desiredSize === null) {
+            // console.log(`[SSE:${deploymentId}] Attempted to send event '${event}' but client is closed or controller is not ready.`);
             return;
           }
           try {
+            // console.log(`[SSE:${deploymentId}] Enqueuing event: ${event}, data:`, data);
             controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           } catch (e: any) {
             console.warn(`[SSE:${deploymentId}] Error enqueuing data for event '${event}': ${e.message}. Marking client as closed.`);
-            clientClosed = true;
+            clientClosed = true; // Prevent further attempts
           }
         };
 
         const poller = setInterval(() => {
-          try { // Wrap poller logic in try-catch
+          try { 
             if (clientClosed) { 
+              // console.log(`[SSE:${deploymentId}] Poller: Client closed. Clearing interval and closing controller.`);
               clearInterval(poller);
-              if (controller.desiredSize !== null) {
-                try { controller.close(); } catch (e) { console.warn(`[SSE:${deploymentId}] Error closing controller during poller cleanup: ${e instanceof Error ? e.message : String(e)}`);}
+              if (controller.desiredSize !== null) { // Check if controller is still open
+                try { controller.close(); console.log(`[SSE:${deploymentId}] Poller: Controller closed due to clientClosed flag.`); } 
+                catch (e) { console.warn(`[SSE:${deploymentId}] Error closing controller during poller cleanup (clientClosed): ${e instanceof Error ? e.message : String(e)}`);}
               }
               return;
             }
@@ -63,11 +67,13 @@ export async function GET(
             if (currentState) {
               if (currentState.logs.length > lastLogIndex) {
                 const newLogs = currentState.logs.slice(lastLogIndex);
+                // console.log(`[SSE:${deploymentId}] Poller: Found ${newLogs.length} new logs.`);
                 newLogs.forEach(log => sendEvent('log', log));
                 lastLogIndex = currentState.logs.length;
               }
 
               if (currentState.status !== lastStatus) {
+                // console.log(`[SSE:${deploymentId}] Poller: Status changed to: ${currentState.status}`);
                 sendEvent('status', currentState.status);
                 lastStatus = currentState.status;
               }
@@ -83,41 +89,37 @@ export async function GET(
                   logs: currentState.logs 
                 };
                 sendEvent('complete', resultPayload);
-                clientClosed = true;
+                clientClosed = true; // This will trigger cleanup in the next poller iteration
               }
             } else { 
               console.warn(`[SSE:${deploymentId}] Poller: Deployment state disappeared. Sending 'error' event and closing.`);
               sendEvent('error', { message: "Deployment state not found or removed unexpectedly." });
-              clientClosed = true; 
+              clientClosed = true; // This will trigger cleanup
             }
           } catch (pollerError: any) {
-            console.error(`[SSE:${deploymentId}] Error in poller interval: ${pollerError.message}`, pollerError);
+            console.error(`[SSE:${deploymentId}] CRITICAL ERROR in poller interval: ${pollerError.message}`, pollerError.stack);
             try {
               if (!clientClosed && controller.desiredSize !== null) {
-                controller.enqueue(`event: error\ndata: ${JSON.stringify({ message: "Internal stream error during polling." })}\n\n`);
+                sendEvent('error', { message: "Internal stream error during polling. Check server logs." });
               }
             } catch (enqueueError: any) {
               console.error(`[SSE:${deploymentId}] Failed to enqueue final error event after poller error: ${enqueueError.message}`);
             }
-            clientClosed = true; 
-            clearInterval(poller);
-            if (controller.desiredSize !== null) {
-              try { controller.close(); } catch (e) { console.warn(`[SSE:${deploymentId}] Error closing controller after poller error: ${e instanceof Error ? e.message : String(e)}`); }
-            }
+            clientClosed = true; // This will trigger cleanup
           }
         }, 750); 
 
         request.signal.addEventListener('abort', () => {
           console.log(`[SSE:${deploymentId}] Client aborted connection (request.signal detected).`);
-          clientClosed = true; 
-          // Poller will handle clearInterval and controller.close() in its next iteration
+          clientClosed = true; // Poller will handle clearInterval and controller.close() in its next iteration
         });
 
       },
       cancel(reason) {
-        const deploymentId = params?.deploymentId || "unknown_deployment_on_cancel";
-        console.log(`[SSE:${deploymentId}] Stream explicitly cancelled by consumer. Reason:`, reason);
-        // The `clientClosed` flag and poller clearInterval should handle cleanup.
+        const currentDeploymentId = params?.deploymentId || "unknown_deployment_on_cancel";
+        console.log(`[SSE:${currentDeploymentId}] Stream explicitly cancelled by consumer. Reason:`, reason);
+        // The `clientClosed` flag in the poller and the abort listener should manage cleanup.
+        // No explicit controller.close() here to avoid race conditions if poller is also trying to close.
       }
     });
 
@@ -131,8 +133,8 @@ export async function GET(
     });
 
   } catch (error: any) { 
-    const deploymentId = params?.deploymentId || "unknown_deployment";
-    console.error(`[SSE:${deploymentId}] CRITICAL ERROR in GET handler during stream setup: ${error.message}`, error.stack);
+    const deploymentIdForError = params?.deploymentId || "unknown_deployment";
+    console.error(`[SSE:${deploymentIdForError}] CRITICAL ERROR in GET handler during stream setup: ${error.message}`, error.stack);
     return new Response(JSON.stringify({ error: `Server error establishing stream: ${error.message}` }), { 
       status: 500,
       headers: { 'Content-Type': 'application/json' } 
