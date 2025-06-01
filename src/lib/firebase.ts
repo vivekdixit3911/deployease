@@ -2,35 +2,41 @@
 // src/lib/firebase.ts
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
+import { getAnalytics, Analytics } from "firebase/analytics";
 
-// Check if NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET is set and log a warning if not.
-// This is a common source of issues if not configured correctly.
-if (!process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET) {
-  console.warn(
-    "WARNING: Firebase Storage bucket (NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET) is not configured in your environment variables. " +
-    "The Firebase SDK will attempt to use the default_bucket associated with your Firebase project if available. " +
-    "If you encounter 'storage/unknown' or similar errors, please ensure this environment variable is correctly set in your .env file " +
-    "to your Firebase project's storage bucket ID (e.g., 'your-project-id.appspot.com')."
-  );
-}
-
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET, // This will be undefined if the env var is not set
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID,
+  apiKey: "AIzaSyBlzmOXM8QzXrT-kWdSNH2jmKtcxuk7Y1c",
+  authDomain: "deeps-e3fe9.firebaseapp.com",
+  projectId: "deeps-e3fe9",
+  storageBucket: "deeps-e3fe9.appspot.com", // Ensure this is the correct bucket name (usually project-id.appspot.com)
+  messagingSenderId: "575487461961",
+  appId: "1:575487461961:web:6e7375597a671da4ed4d98",
+  measurementId: "G-F37LTB2835"
 };
 
 let app: FirebaseApp;
+let analytics: Analytics | undefined;
+
 if (!getApps().length) {
   app = initializeApp(firebaseConfig);
+  // Check if window is defined (i.e., we are on the client-side) before initializing Analytics
+  if (typeof window !== 'undefined') {
+    analytics = getAnalytics(app);
+  }
 } else {
   app = getApps()[0];
+  // If app already initialized, try to get analytics instance if on client
+  if (typeof window !== 'undefined') {
+    try {
+        analytics = getAnalytics(app);
+    } catch (e) {
+        console.warn("Could not initialize Firebase Analytics on subsequent app instance:", e);
+    }
+  }
 }
 
 const storage: FirebaseStorage = getStorage(app);
 
-export { app, storage };
+export { app, storage, analytics };
