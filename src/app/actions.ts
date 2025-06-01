@@ -14,26 +14,22 @@ import { TEMP_UPLOAD_DIR } from '@/config/constants';
 
 const execAsync = promisify(exec);
 
-interface FrameworkDetectionResult {
-  framework: string;
-  build_command?: string;
-  output_directory?: string;
-  reasoning?: string;
-}
-
 export interface DeploymentResult {
   success: boolean;
   message: string;
   projectName?: string;
   deployedUrl?: string;
   error?: string;
-  logs?: string[]; // Optional: to return logs to the client
+  logs?: string[];
 }
 
 function extractErrorMessage(error: any): string {
   if (!error) return 'An unknown error occurred (error object was null or undefined).';
+  
   if (error instanceof Error) {
     let message = error.message || 'Error object had no message property.';
+    // For server-side logs, stack might be useful. For client, it's often too verbose.
+    // if (error.stack && process.env.NODE_ENV === 'development') message += `\nStack: ${error.stack}`;
     return message;
   }
   if (typeof error === 'string') {
@@ -41,16 +37,21 @@ function extractErrorMessage(error: any): string {
   }
   try {
     const stringified = JSON.stringify(error);
+    if (stringified === '{}' && Object.keys(error).length > 0) {
+      return `Non-JSON-serializable error object. Keys: ${Object.keys(error).join(', ')}. ToString: ${String(error)}`;
+    }
     if (stringified === '{}') return 'An empty object was thrown as an error.';
     return stringified;
   } catch (e: any) {
-    let fallbackMessage = 'Could not stringify error object due to an internal error.';
+    let fallbackMessage = 'Could not stringify error object due to an internal error during stringification.';
     if (e && typeof e.message === 'string') {
       fallbackMessage = `Could not stringify error object: ${e.message}`;
     }
     const errorAsString = String(error);
     if (errorAsString !== '[object Object]') {
       fallbackMessage += `. Basic error string: ${errorAsString}`;
+    } else if (error.constructor && error.constructor.name) {
+      fallbackMessage += `. Object type: ${error.constructor.name}`;
     }
     return fallbackMessage;
   }
@@ -66,7 +67,7 @@ async function ensureDirectoryExists(dirPath: string, logs: string[], step: stri
     const errorMsg = `${logPrefix} Failed to create directory ${dirPath}: ${extractErrorMessage(error)}`;
     logs.push(errorMsg);
     console.error(errorMsg, error);
-    throw new Error(errorMsg);
+    throw new Error(errorMsg); // Re-throw to be caught by performFullDeployment's handler
   }
 }
 
@@ -128,6 +129,13 @@ const sanitizeName = (name: string | undefined | null): string => {
     .toLowerCase() || 'untitled-project';
 };
 
+interface FrameworkDetectionResult {
+  framework: string;
+  build_command?: string;
+  output_directory?: string;
+  reasoning?: string;
+}
+
 function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyzed: string, logs: string[]): FrameworkDetectionResult {
   const logPrefix = `[nonAIDetectFramework]`;
   logs.push(`${logPrefix} Input file for analysis: ${fileNameAnalyzed}.`);
@@ -142,7 +150,6 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
         logs.push(`${logPrefix} Detected Next.js.`);
         return { framework: 'nextjs', build_command: scripts.build || 'next build', output_directory: '.next', reasoning: "Next.js dependency found." };
       }
-      // ... (other framework detections remain the same, ensuring logs.push for each detection)
       if (dependencies['@remix-run/dev'] || dependencies.remix) {
         logs.push(`${logPrefix} Detected Remix.`);
         return { framework: 'remix', build_command: scripts.build || 'remix build', output_directory: 'public/build', reasoning: "Remix dependency found." };
@@ -192,8 +199,9 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
   return { framework: 'static', reasoning: "No definitive project files (package.json, index.html) found for analysis." };
 }
 
-async function performFullDeployment(formData: FormData, logs: string[]): Promise<Omit<DeploymentResult, 'logs'>> {
-  const deploymentIdForLogging = `deploy-${Date.now()}`; // For internal logging correlation
+async function performFullDeployment(formData: FormData): Promise<DeploymentResult> {
+  const logs: string[] = [];
+  const deploymentIdForLogging = `deploy-${Date.now()}`;
   const logPrefix = `[performFullDeployment:${deploymentIdForLogging}]`;
   logs.push(`--- ${logPrefix} Process Started ---`);
   
@@ -203,9 +211,10 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
   try {
     logs.push(`${logPrefix} [Step 1/7] Validating S3 config and creating temp directories...`);
     if (!OLA_S3_BUCKET_NAME) {
+      logs.push(`${logPrefix} CRITICAL: OLA_S3_BUCKET_NAME is not configured. Aborting.`);
       throw new MissingS3ConfigError('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); 
+    s3Client(); // This can throw MissingS3ConfigError if other S3 vars are missing
     logs.push(`${logPrefix} S3 client configuration appears valid.`);
     
     await ensureDirectoryExists(TEMP_UPLOAD_DIR, logs, "TempUploadDirSetup");
@@ -219,7 +228,6 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
 
     logs.push(`${logPrefix} Received file: ${file ? file.name : 'null'}, size: ${file ? file.size : 'N/A'}, type: ${file ? file.type : 'N/A'}`);
     logs.push(`${logPrefix} Received githubUrl: ${githubUrl || 'null'}`);
-
 
     if (!file && !githubUrl) {
       throw new Error('No file uploaded and no GitHub URL provided.');
@@ -252,7 +260,6 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
       }
     } else if (file) {
       logs.push(`${logPrefix} [Step 2/7] Processing uploaded file: ${file.name}, type: ${file.type}`);
-      // Relaxed ZIP type check, primary validation is attempting to open it
       if (!file.name.toLowerCase().endsWith('.zip')) {
          logs.push(`${logPrefix} Warning: File does not end with .zip, but attempting to process as ZIP. Type: ${file.type}`);
       }
@@ -302,7 +309,6 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
 
     logs.push(`${logPrefix} [Step 4/7] Determining project root and detecting framework...`);
     const findAnalysisFile = async (currentSearchPath: string, searchBaseDir: string): Promise<{filePath: string | null, content: string | null, relativePath: string | null, projectRoot: string}> => {
-      // ... (findAnalysisFile logic remains the same, ensure logs.push for its internal steps)
       const packageJsonPaths: string[] = [];
       const indexHtmlPaths: string[] = [];
       const findFilesRecursive = async (dir: string) => {
@@ -450,12 +456,14 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
 
     const deployedUrl = `/sites/${finalProjectName}/`; 
     logs.push(`${logPrefix} [Step 7/7] Deployment successful! Site should be accessible at: ${deployedUrl}`);
+    logs.push(`--- ${logPrefix} Process Finished Successfully ---`);
     
     return {
       success: true,
       message: 'Project deployed successfully!',
       projectName: finalProjectName,
       deployedUrl,
+      logs,
     };
 
   } catch (error: any) {
@@ -475,6 +483,7 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
         message: `Deployment failed: ${errorMessage}`,
         projectName: finalProjectNameForErrorHandling, 
         error: errorMessage,
+        logs,
     };
     
   } finally {
@@ -493,42 +502,70 @@ async function performFullDeployment(formData: FormData, logs: string[]): Promis
     } else {
        logs.push(`${logFinallyPrefix} Skipped deletion of temp directory (path issue or not set): ${uniqueTempIdDir || 'Not Set'}`);
     }
-    logs.push(`--- ${logPrefix} Process Finished ---`);
+    // logs.push(`--- ${logPrefix} Process Finished (in finally) ---`); // This might be redundant if success/failure message is already there
   }
 }
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
   const actionLogPrefix = "[deployProject:Action]";
   console.log(`${actionLogPrefix} Entered function.`);
-  const logs: string[] = [];
-
+  
   try {
-    console.log(`${actionLogPrefix} Entered TRY block.`);
-    logs.push(`${actionLogPrefix} Deployment process initiated.`);
+    // Log formData details for debugging
+    try {
+        console.log(`${actionLogPrefix} Received formData. Keys: ${Array.from(formData.keys()).join(', ')}`);
+        if (formData.has('zipfile')) {
+            const file = formData.get('zipfile') as File | null;
+            console.log(`${actionLogPrefix} zipfile details: name=${file?.name}, size=${file?.size}, type=${file?.type}`);
+        } else {
+            console.log(`${actionLogPrefix} zipfile field NOT found in formData.`);
+        }
+        if (formData.has('githubUrl')) {
+            console.log(`${actionLogPrefix} githubUrl value: ${formData.get('githubUrl')}`);
+        } else {
+            console.log(`${actionLogPrefix} githubUrl field NOT found in formData.`);
+        }
+    } catch (formInspectError: any) {
+        console.error(`${actionLogPrefix} Error inspecting formData: ${extractErrorMessage(formInspectError)}`);
+        // Do not re-throw; proceed to performFullDeployment which might also fail but will give structured error
+    }
 
-    const result = await performFullDeployment(formData, logs);
+    // performFullDeployment now returns the full DeploymentResult, including logs
+    const result = await performFullDeployment(formData);
     
-    const response: DeploymentResult = {
-      ...result,
-      logs // Include logs in the final response
-    };
-    console.log(`${actionLogPrefix} Deployment process completed. Success: ${response.success}. Message: ${response.message}`);
-    return response;
+    try {
+      console.log(`${actionLogPrefix} performFullDeployment returned. Preparing to return to client:`, JSON.stringify(result, null, 2));
+    } catch (stringifyError: any) {
+      // This catch is only for the console.log itself. The original 'result' is still returned.
+      console.error(`${actionLogPrefix} Error stringifying result for logging: ${extractErrorMessage(stringifyError)}. Result object (might be complex/unserializable if this failed):`, result);
+    }
+    return result;
 
-  } catch (initialError: any) {
-    const errorMsg = extractErrorMessage(initialError);
-    const errorName = initialError instanceof Error ? initialError.name : "UnknownInitialError";
-    console.error(`${actionLogPrefix} CRITICAL error during deployProject: Name: ${errorName}, Msg: ${errorMsg}`, initialError.stack || initialError);
+  } catch (error: any) { // This catch is for unexpected errors *within* deployProject, or if performFullDeployment throws something truly unhandled.
+    const errorMsg = extractErrorMessage(error);
+    const errorName = error instanceof Error ? error.name : "UnknownErrorInDeployProject";
+    // Log the error with as much detail as possible
+    console.error(`${actionLogPrefix} CRITICAL unhandled error in deployProject. Error (${errorName}): ${errorMsg}`, error.stack || error);
     
-    logs.push(`${actionLogPrefix} Critical error during deployment: ${errorMsg}`);
-    
+    // Construct a fallback DeploymentResult
     const errorResponse: DeploymentResult = {
       success: false,
-      message: `Failed to complete deployment: ${errorMsg}`,
+      message: `Deployment failed due to a critical server error: ${errorMsg}`,
+      projectName: 'untitled-critical-error', // Fallback project name
       error: errorMsg,
-      logs
+      logs: [
+        `${actionLogPrefix} A critical unhandled error occurred in the deployment action.`,
+        `Error Type: ${errorName}`,
+        `Error Message: ${errorMsg}`,
+        // Avoid including error.stack directly in client-facing logs unless sanitized
+      ]
     };
-    console.log(`${actionLogPrefix} Error during deployment, returning:`, JSON.stringify(errorResponse, null, 2));
+    
+    try {
+      console.log(`${actionLogPrefix} Critical error caught in deployProject. Preparing to return error structure to client:`, JSON.stringify(errorResponse, null, 2));
+    } catch (stringifyError: any) {
+      console.error(`${actionLogPrefix} Error stringifying errorResponse for logging after critical error: ${extractErrorMessage(stringifyError)}. errorResponse object:`, errorResponse);
+    }
     return errorResponse;
   }
 }
