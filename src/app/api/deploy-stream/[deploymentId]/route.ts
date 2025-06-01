@@ -18,7 +18,6 @@ export async function GET(
     }
     console.log(`[SSE:${deploymentId}] Connection initiated. Validating deployment ID.`);
 
-    // Initial check: If deployment state doesn't exist, don't bother starting a stream.
     const initialDeploymentState = getDeploymentState(deploymentId);
     if (!initialDeploymentState) {
       console.warn(`[SSE:${deploymentId}] Initial check: Deployment state not found for ID. Aborting stream setup.`);
@@ -35,78 +34,90 @@ export async function GET(
         console.log(`[SSE:${deploymentId}] Stream controller started.`);
         let lastLogIndex = 0;
         let lastStatus = '';
-        let clientClosed = false; // Flag to track if client has closed connection or stream should terminate
+        let clientClosed = false; 
 
         const sendEvent = (event: string, data: any) => {
           if (clientClosed || controller.desiredSize === null) {
-            // console.log(`[SSE:${deploymentId}] Attempted to send event '${event}' but client/controller is closed.`);
             return;
           }
           try {
             controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
           } catch (e: any) {
             console.warn(`[SSE:${deploymentId}] Error enqueuing data for event '${event}': ${e.message}. Marking client as closed.`);
-            clientClosed = true; // If enqueue fails, stream is likely broken
+            clientClosed = true;
           }
         };
 
         const poller = setInterval(() => {
-          if (clientClosed) { // If stream should terminate, stop polling and cleanup
-            clearInterval(poller);
-            // console.log(`[SSE:${deploymentId}] Poller stopped (clientClosed=${clientClosed}).`);
-            if (controller.desiredSize !== null) {
-              try { controller.close(); } catch (e) { /* ignore */ }
-            }
-            return;
-          }
-
-          const currentState = getDeploymentState(deploymentId);
-
-          if (currentState) {
-            if (currentState.logs.length > lastLogIndex) {
-              const newLogs = currentState.logs.slice(lastLogIndex);
-              newLogs.forEach(log => sendEvent('log', log));
-              lastLogIndex = currentState.logs.length;
+          try { // Wrap poller logic in try-catch
+            if (clientClosed) { 
+              clearInterval(poller);
+              if (controller.desiredSize !== null) {
+                try { controller.close(); } catch (e) { console.warn(`[SSE:${deploymentId}] Error closing controller during poller cleanup: ${e instanceof Error ? e.message : String(e)}`);}
+              }
+              return;
             }
 
-            if (currentState.status !== lastStatus) {
-              sendEvent('status', currentState.status);
-              lastStatus = currentState.status;
-            }
-            
-            if (currentState.isDone) {
-              console.log(`[SSE:${deploymentId}] Poller: Deployment complete. Sending 'complete' event.`);
-              const resultPayload = {
-                success: currentState.success,
-                message: currentState.success ? 'Deployment completed successfully.' : (currentState.error || 'Deployment failed.'),
-                projectName: currentState.projectName,
-                deployedUrl: currentState.deployedUrl,
-                error: currentState.error,
-                logs: currentState.logs 
-              };
-              sendEvent('complete', resultPayload);
+            const currentState = getDeploymentState(deploymentId);
+
+            if (currentState) {
+              if (currentState.logs.length > lastLogIndex) {
+                const newLogs = currentState.logs.slice(lastLogIndex);
+                newLogs.forEach(log => sendEvent('log', log));
+                lastLogIndex = currentState.logs.length;
+              }
+
+              if (currentState.status !== lastStatus) {
+                sendEvent('status', currentState.status);
+                lastStatus = currentState.status;
+              }
               
-              clientClosed = true; // Mark to terminate stream
+              if (currentState.isDone) {
+                console.log(`[SSE:${deploymentId}] Poller: Deployment complete. Sending 'complete' event.`);
+                const resultPayload = {
+                  success: currentState.success,
+                  message: currentState.success ? 'Deployment completed successfully.' : (currentState.error || 'Deployment failed.'),
+                  projectName: currentState.projectName,
+                  deployedUrl: currentState.deployedUrl,
+                  error: currentState.error,
+                  logs: currentState.logs 
+                };
+                sendEvent('complete', resultPayload);
+                clientClosed = true;
+              }
+            } else { 
+              console.warn(`[SSE:${deploymentId}] Poller: Deployment state disappeared. Sending 'error' event and closing.`);
+              sendEvent('error', { message: "Deployment state not found or removed unexpectedly." });
+              clientClosed = true; 
             }
-          } else { 
-            console.warn(`[SSE:${deploymentId}] Poller: Deployment state disappeared. Sending 'error' event and closing.`);
-            sendEvent('error', { message: "Deployment state not found or removed unexpectedly." });
-            clientClosed = true; // Mark to terminate stream
+          } catch (pollerError: any) {
+            console.error(`[SSE:${deploymentId}] Error in poller interval: ${pollerError.message}`, pollerError);
+            try {
+              if (!clientClosed && controller.desiredSize !== null) {
+                controller.enqueue(`event: error\ndata: ${JSON.stringify({ message: "Internal stream error during polling." })}\n\n`);
+              }
+            } catch (enqueueError: any) {
+              console.error(`[SSE:${deploymentId}] Failed to enqueue final error event after poller error: ${enqueueError.message}`);
+            }
+            clientClosed = true; 
+            clearInterval(poller);
+            if (controller.desiredSize !== null) {
+              try { controller.close(); } catch (e) { console.warn(`[SSE:${deploymentId}] Error closing controller after poller error: ${e instanceof Error ? e.message : String(e)}`); }
+            }
           }
-        }, 750); // Polling interval
+        }, 750); 
 
-        // Handle client disconnect (e.g., browser tab closed)
         request.signal.addEventListener('abort', () => {
           console.log(`[SSE:${deploymentId}] Client aborted connection (request.signal detected).`);
-          clientClosed = true; // This will be picked up by the poller to stop and cleanup
+          clientClosed = true; 
+          // Poller will handle clearInterval and controller.close() in its next iteration
         });
 
       },
       cancel(reason) {
-        // This is called if the consumer of the stream (e.g. Next.js server) cancels it.
+        const deploymentId = params?.deploymentId || "unknown_deployment_on_cancel";
         console.log(`[SSE:${deploymentId}] Stream explicitly cancelled by consumer. Reason:`, reason);
         // The `clientClosed` flag and poller clearInterval should handle cleanup.
-        // No direct controller.close() here as the ReadableStream API handles it.
       }
     });
 
@@ -115,13 +126,17 @@ export async function GET(
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no', // For Nginx and similar proxies
+        'X-Accel-Buffering': 'no', 
       },
     });
 
   } catch (error: any) { 
     const deploymentId = params?.deploymentId || "unknown_deployment";
     console.error(`[SSE:${deploymentId}] CRITICAL ERROR in GET handler during stream setup: ${error.message}`, error.stack);
-    return new Response(`Server error establishing stream: ${error.message}`, { status: 500 });
+    return new Response(JSON.stringify({ error: `Server error establishing stream: ${error.message}` }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json' } 
+    });
   }
 }
+
