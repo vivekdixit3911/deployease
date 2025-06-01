@@ -19,17 +19,18 @@ export function UploadCard() {
   const [githubUrl, setGithubUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [deploymentResult, setDeploymentResult] = useState<DeploymentResult | null>(null);
-  const [displayLogs, setDisplayLogs] = useState<string[]>([]);
-
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const logsEndRef = useRef<HTMLDivElement>(null);
 
+  const displayedLogs = deploymentResult?.logs || [];
+
   useEffect(() => {
-    if (displayLogs.length > 0) {
+    if (displayedLogs.length > 0) {
         logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [displayLogs]);
+  }, [displayedLogs]);
 
 
   const resetState = () => {
@@ -40,20 +41,17 @@ export function UploadCard() {
     }
     setIsProcessing(false);
     setDeploymentResult(null);
-    setDisplayLogs([]);
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (isProcessing) return;
-    // resetState(); // Don't reset fully here, allow URL to be cleared if file is chosen
     const files = event.target.files;
     if (files && files[0]) {
-      // Basic check for .zip extension as MIME types can be unreliable
-      if (files[0].name.toLowerCase().endsWith('.zip')) {
-        setFile(files[0]);
-        setGithubUrl(''); // Clear URL if file is selected
-        setDeploymentResult(null); // Clear previous results
-        setDisplayLogs([]);
+      const selectedFile = files[0];
+      if (selectedFile.name.toLowerCase().endsWith('.zip') || selectedFile.type === 'application/zip' || selectedFile.type === 'application/x-zip-compressed') {
+        setFile(selectedFile);
+        setGithubUrl(''); 
+        setDeploymentResult(null);
       } else {
         toast({
           title: "Invalid File Type",
@@ -68,14 +66,12 @@ export function UploadCard() {
 
   const handleUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (isProcessing) return;
-    // resetState(); // Don't reset fully here, allow file to be cleared if URL is typed
     setGithubUrl(event.target.value);
     if (event.target.value) { 
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
-    setDeploymentResult(null); // Clear previous results
-    setDisplayLogs([]);
+    setDeploymentResult(null);
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -90,8 +86,11 @@ export function UploadCard() {
     }
     
     setIsProcessing(true);
-    setDeploymentResult(null);
-    setDisplayLogs(['Initiating deployment...']);
+    setDeploymentResult({ // Initial state with processing message
+        success: false, 
+        message: "Deployment in progress...", 
+        logs: ["Initiating deployment..."]
+    });
 
     const formData = new FormData();
     if (file) {
@@ -103,26 +102,26 @@ export function UploadCard() {
     }
 
     try {
+      console.log("[CLIENT] Calling deployProject server action...");
       const result = await deployProject(formData);
+      console.log("[CLIENT] deployProject action returned:", result);
       setDeploymentResult(result);
-      setDisplayLogs(prevLogs => [...prevLogs, ...(result.logs || []) , `Deployment ${result.success ? 'finished successfully.' : 'failed.'}`]);
       toast({
         title: result.success ? "Deployment Successful" : "Deployment Failed",
         description: result.message,
         variant: result.success ? "default" : "destructive",
         duration: result.success ? 5000 : 9000,
       });
-    } catch (error) { // Catch errors from calling deployProject itself or network issues
-      const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred.";
+    } catch (error) { 
       console.error("[CLIENT] handleSubmit critical error:", error);
+      const errorMessage = error instanceof Error ? error.message : "An unexpected client-side error occurred during submission.";
       const resultWithError: DeploymentResult = {
         success: false,
         message: `Client-side error: ${errorMessage}`,
         error: errorMessage,
-        logs: ['Critical client-side error during submission.', errorMessage]
+        logs: [...(deploymentResult?.logs || []), 'Critical client-side error during submission.', errorMessage]
       };
       setDeploymentResult(resultWithError);
-      setDisplayLogs(prevLogs => [...prevLogs, ...resultWithError.logs || []]);
       toast({ title: "Deployment Submission Error", description: errorMessage, variant: "destructive", duration: 9000 });
     } finally {
       setIsProcessing(false);
@@ -138,7 +137,7 @@ export function UploadCard() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {!isProcessing && !deploymentResult && (
+        {!isProcessing && !deploymentResult?.success && !(deploymentResult && !deploymentResult.success && isProcessing === false ) && (
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <Label htmlFor="zipfile" className="text-lg font-medium">Upload Project ZIP File</Label>
@@ -175,7 +174,7 @@ export function UploadCard() {
         
         {(isProcessing || deploymentResult) && (
           <div className="mt-6">
-            {isProcessing && !deploymentResult && (
+            {isProcessing && (
               <div className="flex flex-col items-center justify-center p-6 border rounded-lg bg-muted/50">
                 <Loader2 className="h-12 w-12 animate-spin text-primary mb-4" />
                 <p className="text-lg font-semibold text-primary">Deployment in progress...</p>
@@ -183,7 +182,7 @@ export function UploadCard() {
               </div>
             )}
 
-            {deploymentResult && (
+            {deploymentResult && !isProcessing && ( // Only show final result card when not processing
               <div className={`mt-4 p-4 border rounded-lg ${deploymentResult.success ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                 <div className="flex items-center mb-3">
                   {deploymentResult.success ? <CheckCircle className="h-8 w-8 text-green-600 mr-3" /> : <XCircle className="h-8 w-8 text-red-600 mr-3" />}
@@ -219,22 +218,22 @@ export function UploadCard() {
                     <AlertTriangle className="h-4 w-4" />
                     <AlertTitle>Error Details</AlertTitle>
                     <AlertDescription>
-                      <pre className="whitespace-pre-wrap text-xs">{deploymentResult.error}</pre>
+                      <pre className="whitespace-pre-wrap text-xs break-all">{deploymentResult.error}</pre>
                     </AlertDescription>
                   </Alert>
                 )}
               </div>
             )}
             
-            {(displayLogs.length > 0 || (deploymentResult && deploymentResult.logs && deploymentResult.logs.length > 0)) && (
+            {displayedLogs.length > 0 && (
                  <div className="mt-6 p-4 border rounded-lg bg-muted/50">
                     <h3 className="text-lg font-semibold mb-2 flex items-center">
                         <ListChecks className="h-5 w-5 text-primary mr-2" />
                         Deployment Logs
                     </h3>
                     <ScrollArea className="h-60 w-full rounded-md border bg-background p-3 text-sm">
-                    {(deploymentResult?.logs || displayLogs).map((log, index) => (
-                        <div key={index} className="font-mono text-xs mb-1">
+                    {displayedLogs.map((log, index) => (
+                        <div key={index} className={`font-mono text-xs mb-1 ${log.toLowerCase().includes('error') || log.toLowerCase().includes('failed') || log.toLowerCase().includes('critical') ? 'text-red-600' : ''}`}>
                            {log.startsWith('---') ? <Separator className="my-2" /> : null}
                            {log}
                            {log.startsWith('---') ? <Separator className="my-2" /> : null}
@@ -263,3 +262,4 @@ export function UploadCard() {
     </Card>
   );
 }
+

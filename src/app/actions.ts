@@ -20,44 +20,29 @@ export interface DeploymentResult {
   projectName?: string;
   deployedUrl?: string;
   error?: string;
-  logs?: string[];
+  logs: string[]; // Ensure logs is always an array of strings
 }
 
 function extractErrorMessage(error: any): string {
-  if (!error) return 'An unknown error occurred (error object was null or undefined).';
-  
+  const defaultMessage = 'An unknown error occurred.';
+  if (!error) return defaultMessage;
+
   if (error instanceof Error) {
-    let message = error.message || 'Error object had no message property.';
-    // For server-side logs, stack might be useful. For client, it's often too verbose.
-    // if (error.stack && process.env.NODE_ENV === 'development') message += `\nStack: ${error.stack}`;
-    return message;
+    return error.message || defaultMessage;
   }
   if (typeof error === 'string') {
-    return error;
+    return error || defaultMessage;
   }
   try {
     const stringified = JSON.stringify(error);
-    if (stringified === '{}' && Object.keys(error).length > 0) {
-      return `Non-JSON-serializable error object. Keys: ${Object.keys(error).join(', ')}. ToString: ${String(error)}`;
-    }
-    if (stringified === '{}') return 'An empty object was thrown as an error.';
+    if (stringified === '{}' && Object.keys(error).length === 0) return defaultMessage;
     return stringified;
-  } catch (e: any) {
-    let fallbackMessage = 'Could not stringify error object due to an internal error during stringification.';
-    if (e && typeof e.message === 'string') {
-      fallbackMessage = `Could not stringify error object: ${e.message}`;
-    }
-    const errorAsString = String(error);
-    if (errorAsString !== '[object Object]') {
-      fallbackMessage += `. Basic error string: ${errorAsString}`;
-    } else if (error.constructor && error.constructor.name) {
-      fallbackMessage += `. Object type: ${error.constructor.name}`;
-    }
-    return fallbackMessage;
+  } catch (e) {
+    return `Could not stringify error object. Original error type: ${Object.prototype.toString.call(error)}. ${defaultMessage}`;
   }
 }
 
-async function ensureDirectoryExists(dirPath: string, logs: string[], step: string) {
+async function ensureDirectoryExists(dirPath: string, logs: string[], step: string): Promise<void> {
   const logPrefix = `[ensureDirectoryExists:${step}]`;
   logs.push(`${logPrefix} Ensuring directory exists: ${dirPath}`);
   try {
@@ -67,7 +52,7 @@ async function ensureDirectoryExists(dirPath: string, logs: string[], step: stri
     const errorMsg = `${logPrefix} Failed to create directory ${dirPath}: ${extractErrorMessage(error)}`;
     logs.push(errorMsg);
     console.error(errorMsg, error);
-    throw new Error(errorMsg); // Re-throw to be caught by performFullDeployment's handler
+    throw new Error(errorMsg);
   }
 }
 
@@ -75,7 +60,7 @@ async function uploadDirectoryRecursiveS3(
   localDirPath: string,
   s3BaseKey: string,
   logs: string[]
-) {
+): Promise<void> {
   const logPrefix = `[uploadDirectoryRecursiveS3]`;
   logs.push(`${logPrefix} Starting S3 upload from ${localDirPath} to s3://${OLA_S3_BUCKET_NAME}/${s3BaseKey}`);
 
@@ -84,7 +69,7 @@ async function uploadDirectoryRecursiveS3(
     logs.push(errorMsg);
     throw new MissingS3ConfigError(errorMsg);
   }
-  const currentS3Client = s3Client(); 
+  const currentS3Client = s3Client();
 
   const entries = await fs.readdir(localDirPath, { withFileTypes: true });
   for (const entry of entries) {
@@ -200,34 +185,34 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
 }
 
 async function performFullDeployment(formData: FormData): Promise<DeploymentResult> {
-  const logs: string[] = [];
+  const internalLogs: string[] = [];
   const deploymentIdForLogging = `deploy-${Date.now()}`;
   const logPrefix = `[performFullDeployment:${deploymentIdForLogging}]`;
-  logs.push(`--- ${logPrefix} Process Started ---`);
+  internalLogs.push(`--- ${logPrefix} Process Started ---`);
   
   let uniqueTempIdDir: string | null = null;
   let finalProjectNameForErrorHandling = 'untitled-project-setup-phase'; 
 
   try {
-    logs.push(`${logPrefix} [Step 1/7] Validating S3 config and creating temp directories...`);
+    internalLogs.push(`${logPrefix} [Step 1/7] Validating S3 config and creating temp directories...`);
     if (!OLA_S3_BUCKET_NAME) {
-      logs.push(`${logPrefix} CRITICAL: OLA_S3_BUCKET_NAME is not configured. Aborting.`);
+      internalLogs.push(`${logPrefix} CRITICAL: OLA_S3_BUCKET_NAME is not configured. Aborting.`);
       throw new MissingS3ConfigError('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
     s3Client(); // This can throw MissingS3ConfigError if other S3 vars are missing
-    logs.push(`${logPrefix} S3 client configuration appears valid.`);
+    internalLogs.push(`${logPrefix} S3 client configuration appears valid.`);
     
-    await ensureDirectoryExists(TEMP_UPLOAD_DIR, logs, "TempUploadDirSetup");
+    await ensureDirectoryExists(TEMP_UPLOAD_DIR, internalLogs, "TempUploadDirSetup");
     const uniqueIdSuffix = Math.random().toString(36).substring(2, 9);
     uniqueTempIdDir = path.join(TEMP_UPLOAD_DIR, `deploy-${deploymentIdForLogging.substring(0,8)}-${uniqueIdSuffix}`);
-    await ensureDirectoryExists(uniqueTempIdDir, logs, "UniqueTempDirSetup");
-    logs.push(`${logPrefix} Unique temporary directory: ${uniqueTempIdDir}`);
+    await ensureDirectoryExists(uniqueTempIdDir, internalLogs, "UniqueTempDirSetup");
+    internalLogs.push(`${logPrefix} Unique temporary directory: ${uniqueTempIdDir}`);
 
     const githubUrl = formData.get('githubUrl') as string | null;
     const file = formData.get('zipfile') as File | null;
 
-    logs.push(`${logPrefix} Received file: ${file ? file.name : 'null'}, size: ${file ? file.size : 'N/A'}, type: ${file ? file.type : 'N/A'}`);
-    logs.push(`${logPrefix} Received githubUrl: ${githubUrl || 'null'}`);
+    internalLogs.push(`${logPrefix} Received file: ${file ? file.name : 'null'}, size: ${file ? file.size : 'N/A'}, type: ${file ? file.type : 'N/A'}`);
+    internalLogs.push(`${logPrefix} Received githubUrl: ${githubUrl || 'null'}`);
 
     if (!file && !githubUrl) {
       throw new Error('No file uploaded and no GitHub URL provided.');
@@ -237,77 +222,79 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
     let baseExtractionDir = '';
 
     if (githubUrl) {
-      logs.push(`${logPrefix} [Step 2/7] Processing GitHub URL: ${githubUrl}`);
+      internalLogs.push(`${logPrefix} [Step 2/7] Processing GitHub URL: ${githubUrl}`);
       if (!githubUrl.match(/^(https?:\/\/)?(www\.)?github\.com\/[\w-]+\/[\w.-]+(\.git)?$/i)) {
         throw new Error('Invalid GitHub URL format.');
       }
       
       baseExtractionDir = path.join(uniqueTempIdDir, 'cloned_repo');
-      await ensureDirectoryExists(baseExtractionDir, logs, "GitCloneDirSetup");
-      logs.push(`${logPrefix} Attempting to clone ${githubUrl} into ${baseExtractionDir}...`);
+      await ensureDirectoryExists(baseExtractionDir, internalLogs, "GitCloneDirSetup");
+      internalLogs.push(`${logPrefix} Attempting to clone ${githubUrl} into ${baseExtractionDir}...`);
       try {
         const cloneOutput = await execAsync(`git clone --depth 1 ${githubUrl} .`, { cwd: baseExtractionDir });
-        if (cloneOutput.stdout) logs.push(`${logPrefix} Git clone stdout:\n${cloneOutput.stdout}`);
-        if (cloneOutput.stderr) logs.push(`${logPrefix} Git clone stderr (may not be an error):\n${cloneOutput.stderr}`);
-        logs.push(`${logPrefix} Repository cloned successfully.`);
+        if (cloneOutput.stdout) internalLogs.push(`${logPrefix} Git clone stdout:\n${cloneOutput.stdout}`);
+        if (cloneOutput.stderr) internalLogs.push(`${logPrefix} Git clone stderr (may not be an error):\n${cloneOutput.stderr}`);
+        internalLogs.push(`${logPrefix} Repository cloned successfully.`);
         sourceNameForProject = githubUrl;
       } catch (cloneError: any) {
         const errorMsg = extractErrorMessage(cloneError);
-        logs.push(`${logPrefix} Error cloning repository: ${errorMsg}`);
-        if (cloneError.stdout) logs.push(`${logPrefix} Git clone stdout (on error):\n${cloneError.stdout}`);
-        if (cloneError.stderr) logs.push(`${logPrefix} Git clone stderr (on error):\n${cloneError.stderr}`);
+        internalLogs.push(`${logPrefix} Error cloning repository: ${errorMsg}`);
+        if (cloneError.stdout) internalLogs.push(`${logPrefix} Git clone stdout (on error):\n${cloneError.stdout}`);
+        if (cloneError.stderr) internalLogs.push(`${logPrefix} Git clone stderr (on error):\n${cloneError.stderr}`);
         throw new Error(`Failed to clone repository: ${errorMsg}`);
       }
     } else if (file) {
-      logs.push(`${logPrefix} [Step 2/7] Processing uploaded file: ${file.name}, type: ${file.type}`);
-      if (!file.name.toLowerCase().endsWith('.zip')) {
-         logs.push(`${logPrefix} Warning: File does not end with .zip, but attempting to process as ZIP. Type: ${file.type}`);
+      internalLogs.push(`${logPrefix} [Step 2/7] Processing uploaded file: ${file.name}, type: ${file.type}`);
+      if (!file.name.toLowerCase().endsWith('.zip') && file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
+         internalLogs.push(`${logPrefix} CRITICAL: File is not a ZIP. Name: ${file.name}, Type: ${file.type}. Aborting.`);
+         throw new Error('Uploaded file is not a .zip file.');
       }
+      internalLogs.push(`${logPrefix} File appears to be a ZIP file. Proceeding with extraction.`);
       
       const tempZipPath = path.join(uniqueTempIdDir, file.name);
       baseExtractionDir = path.join(uniqueTempIdDir, 'extracted_zip');
-      await ensureDirectoryExists(baseExtractionDir, logs, "ZipExtractDirSetup");
-      logs.push(`${logPrefix} Root extraction path for ZIP: ${baseExtractionDir}`);
+      await ensureDirectoryExists(baseExtractionDir, internalLogs, "ZipExtractDirSetup");
+      internalLogs.push(`${logPrefix} Root extraction path for ZIP: ${baseExtractionDir}`);
 
       const fileBuffer = Buffer.from(await file.arrayBuffer());
       await fs.writeFile(tempZipPath, fileBuffer);
-      logs.push(`${logPrefix} Temporary ZIP file saved to: ${tempZipPath}`);
+      internalLogs.push(`${logPrefix} Temporary ZIP file saved to: ${tempZipPath}`);
 
       let zip;
       try {
         zip = await JSZip.loadAsync(fileBuffer);
       } catch (zipLoadError: any) {
-        logs.push(`${logPrefix} CRITICAL: Failed to load ZIP file. Error: ${extractErrorMessage(zipLoadError)}`);
+        internalLogs.push(`${logPrefix} CRITICAL: Failed to load ZIP file. Error: ${extractErrorMessage(zipLoadError)}`);
         throw new Error(`Invalid ZIP file: ${extractErrorMessage(zipLoadError)}`);
       }
 
       const fileNamesInZip: string[] = [];
-      logs.push(`${logPrefix} Extracting ZIP files to ${baseExtractionDir}...`);
+      internalLogs.push(`${logPrefix} Extracting ZIP files to ${baseExtractionDir}...`);
       for (const relativePathInZip in zip.files) {
         fileNamesInZip.push(relativePathInZip);
         const zipEntry = zip.files[relativePathInZip];
         const localDestPath = path.join(baseExtractionDir, relativePathInZip);
         if (zipEntry.dir) {
-          await ensureDirectoryExists(localDestPath, logs, "ZipDirCreationInLoop");
+          await ensureDirectoryExists(localDestPath, internalLogs, "ZipDirCreationInLoop");
         } else {
           const content = await zipEntry.async('nodebuffer');
-          await ensureDirectoryExists(path.dirname(localDestPath), logs, "ZipFileDirCreationInLoop");
+          await ensureDirectoryExists(path.dirname(localDestPath), internalLogs, "ZipFileDirCreationInLoop");
           await fs.writeFile(localDestPath, content);
         }
       }
-      logs.push(`${logPrefix} ZIP extraction complete. Files extracted: ${fileNamesInZip.length}`);
+      internalLogs.push(`${logPrefix} ZIP extraction complete. Files extracted: ${fileNamesInZip.length}`);
       if (fileNamesInZip.length === 0) throw new Error('The uploaded ZIP file is empty or invalid after extraction attempt.');
       sourceNameForProject = file.name;
     } else { 
       throw new Error("No deployment source (ZIP or Git URL) provided.");
     }
 
-    logs.push(`${logPrefix} [Step 3/7] Sanitizing project name from: ${sourceNameForProject}`);
+    internalLogs.push(`${logPrefix} [Step 3/7] Sanitizing project name from: ${sourceNameForProject}`);
     const finalProjectName = sanitizeName(sourceNameForProject) || `web-deploy-${deploymentIdForLogging.substring(0, 5)}`;
     finalProjectNameForErrorHandling = finalProjectName;
-    logs.push(`${logPrefix} Using project name: ${finalProjectName}`);
+    internalLogs.push(`${logPrefix} Using project name: ${finalProjectName}`);
 
-    logs.push(`${logPrefix} [Step 4/7] Determining project root and detecting framework...`);
+    internalLogs.push(`${logPrefix} [Step 4/7] Determining project root and detecting framework...`);
     const findAnalysisFile = async (currentSearchPath: string, searchBaseDir: string): Promise<{filePath: string | null, content: string | null, relativePath: string | null, projectRoot: string}> => {
       const packageJsonPaths: string[] = [];
       const indexHtmlPaths: string[] = [];
@@ -335,16 +322,16 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
       if (packageJsonPaths.length > 0) {
         const chosenFile = packageJsonPaths[0];
         const determinedProjectRoot = path.join(searchBaseDir, path.dirname(chosenFile));
-        logs.push(`${logPrefix}:findAnalysisFile] Found package.json at ${chosenFile}. Project root set to: ${determinedProjectRoot}`);
+        internalLogs.push(`${logPrefix}:findAnalysisFile] Found package.json at ${chosenFile}. Project root set to: ${determinedProjectRoot}`);
         return { filePath: path.join(searchBaseDir, chosenFile), content: await fs.readFile(path.join(searchBaseDir, chosenFile), 'utf-8'), relativePath: chosenFile, projectRoot: determinedProjectRoot };
       }
       if (indexHtmlPaths.length > 0) {
          const chosenFile = indexHtmlPaths[0];
          const determinedProjectRoot = path.join(searchBaseDir, path.dirname(chosenFile));
-         logs.push(`${logPrefix}:findAnalysisFile] Found index.html at ${chosenFile}. Project root set to: ${determinedProjectRoot}`);
+         internalLogs.push(`${logPrefix}:findAnalysisFile] Found index.html at ${chosenFile}. Project root set to: ${determinedProjectRoot}`);
          return { filePath: path.join(searchBaseDir, chosenFile), content: await fs.readFile(path.join(searchBaseDir, chosenFile), 'utf-8'), relativePath: chosenFile, projectRoot: determinedProjectRoot };
       }
-      logs.push(`${logPrefix}:findAnalysisFile] No package.json or suitable index.html found. Defaulting project root to: ${baseExtractionDir}`);
+      internalLogs.push(`${logPrefix}:findAnalysisFile] No package.json or suitable index.html found. Defaulting project root to: ${baseExtractionDir}`);
       return { filePath: null, content: null, relativePath: null, projectRoot: baseExtractionDir };
     };
 
@@ -353,34 +340,34 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
     let frameworkDetectionResult: FrameworkDetectionResult;
 
     if (analysisResult.relativePath && analysisResult.content) {
-        logs.push(`${logPrefix} Framework detection using file: '${analysisResult.relativePath}'. Effective project root: ${projectRootPath}`);
-        frameworkDetectionResult = nonAIDetectFramework(analysisResult.content, analysisResult.relativePath, logs);
+        internalLogs.push(`${logPrefix} Framework detection using file: '${analysisResult.relativePath}'. Effective project root: ${projectRootPath}`);
+        frameworkDetectionResult = nonAIDetectFramework(analysisResult.content, analysisResult.relativePath, internalLogs);
     } else {
-        logs.push(`${logPrefix} No specific analysis file found. Effective project root: ${projectRootPath}. Assuming static.`);
-        frameworkDetectionResult = nonAIDetectFramework(null, 'none_found_in_search', logs);
+        internalLogs.push(`${logPrefix} No specific analysis file found. Effective project root: ${projectRootPath}. Assuming static.`);
+        frameworkDetectionResult = nonAIDetectFramework(null, 'none_found_in_search', internalLogs);
     }
-    logs.push(`${logPrefix} Detected framework: ${frameworkDetectionResult.framework}. Build command: ${frameworkDetectionResult.build_command || 'N/A'}. Output dir: ${frameworkDetectionResult.output_directory || 'N/A'}`);
-    if(frameworkDetectionResult.reasoning) logs.push(`${logPrefix} Reasoning: ${frameworkDetectionResult.reasoning}`);
+    internalLogs.push(`${logPrefix} Detected framework: ${frameworkDetectionResult.framework}. Build command: ${frameworkDetectionResult.build_command || 'N/A'}. Output dir: ${frameworkDetectionResult.output_directory || 'N/A'}`);
+    if(frameworkDetectionResult.reasoning) internalLogs.push(`${logPrefix} Reasoning: ${frameworkDetectionResult.reasoning}`);
 
     const needsBuild = frameworkDetectionResult.framework !== 'static' && frameworkDetectionResult.build_command;
     let finalBuildSourcePath = projectRootPath;
 
     if (needsBuild && frameworkDetectionResult.build_command) {
-      logs.push(`${logPrefix} [Step 5/7] Project requires build. Starting build process in ${projectRootPath}...`);
+      internalLogs.push(`${logPrefix} [Step 5/7] Project requires build. Starting build process in ${projectRootPath}...`);
       
-      logs.push(`${logPrefix} Updating Browserslist database in ${projectRootPath}...`);
+      internalLogs.push(`${logPrefix} Updating Browserslist database in ${projectRootPath}...`);
       try {
         const updateDbOutput = await execAsync('npx update-browserslist-db@latest --yes', { cwd: projectRootPath });
-        if(updateDbOutput.stdout) logs.push(`${logPrefix} Browserslist update stdout: ${updateDbOutput.stdout}`);
-        if(updateDbOutput.stderr) logs.push(`${logPrefix} Browserslist update stderr (may not be error): ${updateDbOutput.stderr}`);
+        if(updateDbOutput.stdout) internalLogs.push(`${logPrefix} Browserslist update stdout: ${updateDbOutput.stdout}`);
+        if(updateDbOutput.stderr) internalLogs.push(`${logPrefix} Browserslist update stderr (may not be error): ${updateDbOutput.stderr}`);
       } catch (updateDbError: any) {
-        logs.push(`${logPrefix} Warning: Failed to update Browserslist database: ${extractErrorMessage(updateDbError)}. Build will proceed.`);
+        internalLogs.push(`${logPrefix} Warning: Failed to update Browserslist database: ${extractErrorMessage(updateDbError)}. Build will proceed.`);
       }
       
-      logs.push(`${logPrefix} Running 'npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false' in ${projectRootPath}...`);
+      internalLogs.push(`${logPrefix} Running 'npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false' in ${projectRootPath}...`);
       const installOutput = await execAsync('npm install --legacy-peer-deps --prefer-offline --no-audit --progress=false', { cwd: projectRootPath });
-      if(installOutput.stdout) logs.push(`${logPrefix} npm install stdout: ${installOutput.stdout}`);
-      if(installOutput.stderr) logs.push(`${logPrefix} npm install stderr (may not be error): ${installOutput.stderr}`);
+      if(installOutput.stdout) internalLogs.push(`${logPrefix} npm install stdout: ${installOutput.stdout}`);
+      if(installOutput.stderr) internalLogs.push(`${logPrefix} npm install stderr (may not be error): ${installOutput.stderr}`);
 
       let buildCommandToExecute = frameworkDetectionResult.build_command;
       const buildEnv = { ...process.env };
@@ -391,16 +378,16 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
           if (frameworkDetectionResult.framework === 'vite-react' && !buildCommandToExecute.includes('--base')) {
               const viteBasePath = publicUrlForAssets.endsWith('/') ? publicUrlForAssets : `${publicUrlForAssets}/`;
               buildCommandToExecute = `${buildCommandToExecute.replace(/vite build/, `vite build --base=${viteBasePath}`)}`; 
-              logs.push(`${logPrefix} Adjusted Vite build command: '${buildCommandToExecute}'`);
+              internalLogs.push(`${logPrefix} Adjusted Vite build command: '${buildCommandToExecute}'`);
           } else {
-              logs.push(`${logPrefix} Setting PUBLIC_URL=${publicUrlForAssets} for build.`);
+              internalLogs.push(`${logPrefix} Setting PUBLIC_URL=${publicUrlForAssets} for build.`);
           }
       }
       
-      logs.push(`${logPrefix} Executing build command: '${buildCommandToExecute}' in ${projectRootPath} with env: ${JSON.stringify(buildEnv.PUBLIC_URL ? { PUBLIC_URL: buildEnv.PUBLIC_URL } : {})}`);
+      internalLogs.push(`${logPrefix} Executing build command: '${buildCommandToExecute}' in ${projectRootPath} with env: ${JSON.stringify(buildEnv.PUBLIC_URL ? { PUBLIC_URL: buildEnv.PUBLIC_URL } : {})}`);
       const buildOutput = await execAsync(buildCommandToExecute, { cwd: projectRootPath, env: buildEnv });
-      if(buildOutput.stdout) logs.push(`${logPrefix} Build command stdout: ${buildOutput.stdout}`);
-      if(buildOutput.stderr) logs.push(`${logPrefix} Build command stderr (may not be error): ${buildOutput.stderr}`);
+      if(buildOutput.stdout) internalLogs.push(`${logPrefix} Build command stdout: ${buildOutput.stdout}`);
+      if(buildOutput.stderr) internalLogs.push(`${logPrefix} Build command stderr (may not be error): ${buildOutput.stderr}`);
 
       const detectedOutputDirName = frameworkDetectionResult.output_directory;
       let foundBuildOutputDir = '';
@@ -410,14 +397,14 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
               await fs.access(potentialPath);
               if ((await fs.stat(potentialPath)).isDirectory()) {
                   foundBuildOutputDir = potentialPath;
-                  logs.push(`${logPrefix} Build output successfully found at primary path: ${foundBuildOutputDir}`);
+                  internalLogs.push(`${logPrefix} Build output successfully found at primary path: ${foundBuildOutputDir}`);
               }
-          } catch { logs.push(`${logPrefix} Primary output dir '${potentialPath}' not found or not a directory.`); }
+          } catch { internalLogs.push(`${logPrefix} Primary output dir '${potentialPath}' not found or not a directory.`); }
       }
 
       if (!foundBuildOutputDir) {
         const commonOutputDirs = ['dist', 'build', 'out', '.next', 'public', '.output/public', '.svelte-kit/output/client'];
-        logs.push(`${logPrefix} Primary build output directory '${detectedOutputDirName || 'N/A'}' not confirmed. Fallback searching: ${commonOutputDirs.join(', ')} within ${projectRootPath}`);
+        internalLogs.push(`${logPrefix} Primary build output directory '${detectedOutputDirName || 'N/A'}' not confirmed. Fallback searching: ${commonOutputDirs.join(', ')} within ${projectRootPath}`);
         for (const dir of commonOutputDirs) {
           if (detectedOutputDirName === dir && !foundBuildOutputDir) continue; 
           const potentialPath = path.join(projectRootPath, dir);
@@ -425,7 +412,7 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
             await fs.access(potentialPath);
              if ((await fs.stat(potentialPath)).isDirectory()) {
                 foundBuildOutputDir = potentialPath;
-                logs.push(`${logPrefix} Found build output directory (fallback search) at: ${foundBuildOutputDir}`);
+                internalLogs.push(`${logPrefix} Found build output directory (fallback search) at: ${foundBuildOutputDir}`);
                 break;
             }
           } catch { /* Directory does not exist */ }
@@ -433,37 +420,37 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
       }
 
       if (!foundBuildOutputDir) {
-        logs.push(`${logPrefix} CRITICAL: Build output directory not found in ${projectRootPath} after build. Expected: '${detectedOutputDirName || 'various defaults'}'. Attempting to upload from project root as last resort, but this is likely wrong.`);
+        internalLogs.push(`${logPrefix} CRITICAL: Build output directory not found in ${projectRootPath} after build. Expected: '${detectedOutputDirName || 'various defaults'}'. Attempting to upload from project root as last resort, but this is likely wrong.`);
       } else {
           finalBuildSourcePath = foundBuildOutputDir;
       }
     } else {
-      logs.push(`${logPrefix} [Step 5/7] Static site or no build command. Preparing for direct upload from ${projectRootPath}.`);
+      internalLogs.push(`${logPrefix} [Step 5/7] Static site or no build command. Preparing for direct upload from ${projectRootPath}.`);
        if (githubUrl && frameworkDetectionResult.framework === 'static') {
         try {
           const staticDirContents = await fs.readdir(finalBuildSourcePath);
-          logs.push(`${logPrefix} Contents of static site source directory '${finalBuildSourcePath}' for upload: ${staticDirContents.join(', ')}`);
+          internalLogs.push(`${logPrefix} Contents of static site source directory '${finalBuildSourcePath}' for upload: ${staticDirContents.join(', ')}`);
         } catch (readdirError: any) {
-          logs.push(`${logPrefix} Warning: Could not list contents of static site source directory '${finalBuildSourcePath}': ${extractErrorMessage(readdirError)}`);
+          internalLogs.push(`${logPrefix} Warning: Could not list contents of static site source directory '${finalBuildSourcePath}': ${extractErrorMessage(readdirError)}`);
         }
       }
     }
     
-    logs.push(`${logPrefix} [Step 6/7] Uploading files from ${finalBuildSourcePath} to S3...`);
+    internalLogs.push(`${logPrefix} [Step 6/7] Uploading files from ${finalBuildSourcePath} to S3...`);
     const s3ProjectBaseKey = `sites/${finalProjectName}`;
-    await uploadDirectoryRecursiveS3(finalBuildSourcePath, s3ProjectBaseKey, logs);
-    logs.push(`${logPrefix} Files uploaded successfully to S3.`);
+    await uploadDirectoryRecursiveS3(finalBuildSourcePath, s3ProjectBaseKey, internalLogs);
+    internalLogs.push(`${logPrefix} Files uploaded successfully to S3.`);
 
     const deployedUrl = `/sites/${finalProjectName}/`; 
-    logs.push(`${logPrefix} [Step 7/7] Deployment successful! Site should be accessible at: ${deployedUrl}`);
-    logs.push(`--- ${logPrefix} Process Finished Successfully ---`);
+    internalLogs.push(`${logPrefix} [Step 7/7] Deployment successful! Site should be accessible at: ${deployedUrl}`);
+    internalLogs.push(`--- ${logPrefix} Process Finished Successfully ---`);
     
     return {
       success: true,
       message: 'Project deployed successfully!',
       projectName: finalProjectName,
       deployedUrl,
-      logs,
+      logs: internalLogs,
     };
 
   } catch (error: any) {
@@ -471,11 +458,11 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
     const errorName = error instanceof Error ? error.name : "UnknownErrorInPerformFullDeployment";
     console.error(`${logPrefix} CRITICAL FAILURE. Project: ${finalProjectNameForErrorHandling}. Error (${errorName}): ${errorMessage}`, error.stack || error);
     
-    logs.push(`\n--- ${logPrefix} DEPLOYMENT FAILED ---`);
-    logs.push(`Error Type: ${errorName}`);
-    logs.push(`Error Message: ${errorMessage}`);
+    internalLogs.push(`\n--- ${logPrefix} DEPLOYMENT FAILED ---`);
+    internalLogs.push(`Error Type: ${errorName}`);
+    internalLogs.push(`Error Message: ${errorMessage}`);
     if (error instanceof Error && error.stack) {
-        logs.push(`Stack Trace:\n${error.stack}`);
+        internalLogs.push(`Stack Trace (condensed):\n${error.stack.substring(0, 500)}...`); // Log a condensed stack
     }
     
     return {
@@ -483,89 +470,97 @@ async function performFullDeployment(formData: FormData): Promise<DeploymentResu
         message: `Deployment failed: ${errorMessage}`,
         projectName: finalProjectNameForErrorHandling, 
         error: errorMessage,
-        logs,
+        logs: internalLogs,
     };
     
   } finally {
     const logFinallyPrefix = `${logPrefix}:Finally]`;
-    logs.push(`${logFinallyPrefix} Process reached 'finally' block.`);
+    internalLogs.push(`${logFinallyPrefix} Process reached 'finally' block.`);
     if (uniqueTempIdDir && uniqueTempIdDir.startsWith(TEMP_UPLOAD_DIR) && uniqueTempIdDir !== TEMP_UPLOAD_DIR) {
       try {
-        logs.push(`${logFinallyPrefix} Attempting to delete temporary directory: ${uniqueTempIdDir}`);
+        internalLogs.push(`${logFinallyPrefix} Attempting to delete temporary directory: ${uniqueTempIdDir}`);
         await fs.rm(uniqueTempIdDir, { recursive: true, force: true });
-        logs.push(`${logFinallyPrefix} Successfully deleted temporary directory: ${uniqueTempIdDir}`);
+        internalLogs.push(`${logFinallyPrefix} Successfully deleted temporary directory: ${uniqueTempIdDir}`);
       } catch (cleanupError: any) {
         const cleanupMessage = `${logFinallyPrefix} Error during cleanup of ${uniqueTempIdDir}: ${extractErrorMessage(cleanupError)}`;
-        logs.push(cleanupMessage);
+        internalLogs.push(cleanupMessage);
         console.error(cleanupMessage, cleanupError.stack);
       }
     } else {
-       logs.push(`${logFinallyPrefix} Skipped deletion of temp directory (path issue or not set): ${uniqueTempIdDir || 'Not Set'}`);
+       internalLogs.push(`${logFinallyPrefix} Skipped deletion of temp directory (path issue or not set): ${uniqueTempIdDir || 'Not Set'}`);
     }
-    // logs.push(`--- ${logPrefix} Process Finished (in finally) ---`); // This might be redundant if success/failure message is already there
   }
 }
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
   const actionLogPrefix = "[deployProject:Action]";
   console.log(`${actionLogPrefix} Entered function.`);
-  
+  let result: DeploymentResult;
+
   try {
     // Log formData details for debugging
-    try {
-        console.log(`${actionLogPrefix} Received formData. Keys: ${Array.from(formData.keys()).join(', ')}`);
-        if (formData.has('zipfile')) {
-            const file = formData.get('zipfile') as File | null;
-            console.log(`${actionLogPrefix} zipfile details: name=${file?.name}, size=${file?.size}, type=${file?.type}`);
-        } else {
-            console.log(`${actionLogPrefix} zipfile field NOT found in formData.`);
+    console.log(`${actionLogPrefix} Received formData. Keys: ${Array.from(formData.keys()).join(', ')}`);
+    if (formData.has('zipfile')) {
+        const file = formData.get('zipfile') as File | null;
+        console.log(`${actionLogPrefix} zipfile details: name=${file?.name}, size=${file?.size}, type=${file?.type}`);
+         if (file && !file.name.toLowerCase().endsWith('.zip') && file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
+            console.error(`${actionLogPrefix} CRITICAL: Client submitted a file that is not a ZIP. Name: ${file.name}, Type: ${file.type}`);
+            // This case should ideally be caught client-side, but as a server safeguard:
+             return {
+                success: false,
+                message: "Invalid file type. Only .zip files are allowed.",
+                projectName: sanitizeName(file?.name),
+                error: "Invalid file type. Only .zip files are allowed.",
+                logs: [`${actionLogPrefix} Error: Client submitted a non-ZIP file. Name: ${file.name}, Type: ${file.type}`]
+            };
         }
-        if (formData.has('githubUrl')) {
-            console.log(`${actionLogPrefix} githubUrl value: ${formData.get('githubUrl')}`);
-        } else {
-            console.log(`${actionLogPrefix} githubUrl field NOT found in formData.`);
-        }
-    } catch (formInspectError: any) {
-        console.error(`${actionLogPrefix} Error inspecting formData: ${extractErrorMessage(formInspectError)}`);
-        // Do not re-throw; proceed to performFullDeployment which might also fail but will give structured error
+    } else {
+        console.log(`${actionLogPrefix} zipfile field NOT found in formData.`);
     }
-
-    // performFullDeployment now returns the full DeploymentResult, including logs
-    const result = await performFullDeployment(formData);
+    if (formData.has('githubUrl')) {
+        console.log(`${actionLogPrefix} githubUrl value: ${formData.get('githubUrl')}`);
+    } else {
+        console.log(`${actionLogPrefix} githubUrl field NOT found in formData.`);
+    }
     
-    try {
-      console.log(`${actionLogPrefix} performFullDeployment returned. Preparing to return to client:`, JSON.stringify(result, null, 2));
-    } catch (stringifyError: any) {
-      // This catch is only for the console.log itself. The original 'result' is still returned.
-      console.error(`${actionLogPrefix} Error stringifying result for logging: ${extractErrorMessage(stringifyError)}. Result object (might be complex/unserializable if this failed):`, result);
-    }
-    return result;
+    console.log(`${actionLogPrefix} Calling performFullDeployment...`);
+    result = await performFullDeployment(formData);
+    console.log(`${actionLogPrefix} performFullDeployment returned. Success: ${result.success}`);
 
-  } catch (error: any) { // This catch is for unexpected errors *within* deployProject, or if performFullDeployment throws something truly unhandled.
+  } catch (error: any) { 
     const errorMsg = extractErrorMessage(error);
     const errorName = error instanceof Error ? error.name : "UnknownErrorInDeployProject";
-    // Log the error with as much detail as possible
     console.error(`${actionLogPrefix} CRITICAL unhandled error in deployProject. Error (${errorName}): ${errorMsg}`, error.stack || error);
     
-    // Construct a fallback DeploymentResult
-    const errorResponse: DeploymentResult = {
+    result = {
       success: false,
       message: `Deployment failed due to a critical server error: ${errorMsg}`,
-      projectName: 'untitled-critical-error', // Fallback project name
+      projectName: 'untitled-critical-error',
       error: errorMsg,
       logs: [
         `${actionLogPrefix} A critical unhandled error occurred in the deployment action.`,
         `Error Type: ${errorName}`,
         `Error Message: ${errorMsg}`,
-        // Avoid including error.stack directly in client-facing logs unless sanitized
       ]
     };
-    
-    try {
-      console.log(`${actionLogPrefix} Critical error caught in deployProject. Preparing to return error structure to client:`, JSON.stringify(errorResponse, null, 2));
-    } catch (stringifyError: any) {
-      console.error(`${actionLogPrefix} Error stringifying errorResponse for logging after critical error: ${extractErrorMessage(stringifyError)}. errorResponse object:`, errorResponse);
-    }
-    return errorResponse;
   }
+
+  try {
+    // Log the exact object being returned
+    const resultString = JSON.stringify(result, null, 2);
+    console.log(`${actionLogPrefix} Attempting to return to client: ${resultString}`);
+  } catch (stringifyError: any) {
+    // This means the 'result' object itself is not serializable, which is a major issue.
+    console.error(`${actionLogPrefix} CRITICAL: Could not stringify the 'result' object before returning. Error: ${extractErrorMessage(stringifyError)}`, result);
+    // Fallback to a very basic, guaranteed-serializable error response
+    return {
+        success: false,
+        message: "Server encountered a critical error preparing the response. Check server logs.",
+        projectName: result?.projectName || 'serialization-error',
+        error: "Server response serialization error.",
+        logs: result?.logs && Array.isArray(result.logs) ? [...result.logs, "Server response serialization error."] : ["Server response serialization error."]
+    };
+  }
+  return result;
 }
+
