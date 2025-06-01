@@ -30,9 +30,10 @@ interface DeploymentResult {
 async function ensureDirectoryExists(dirPath: string) {
   try {
     await fs.mkdir(dirPath, { recursive: true });
-  } catch (error) {
-    console.error(`Failed to create directory ${dirPath}:`, error);
-    throw error;
+    console.log(`Successfully ensured directory exists: ${dirPath}`);
+  } catch (error: any) {
+    console.error(`Failed to create directory ${dirPath}:`, error.message, error.stack);
+    throw new Error(`Failed to create required directory ${dirPath}: ${error.message}`);
   }
 }
 
@@ -43,7 +44,7 @@ async function uploadDirectoryRecursiveS3(
 ) {
   if (!OLA_S3_BUCKET_NAME) {
     logsRef.value += 'Error: OLA_S3_BUCKET_NAME is not configured.\n';
-    throw new Error('OLA_S3_BUCKET_NAME is not configured.');
+    throw new Error('OLA_S3_BUCKET_NAME is not configured for S3 upload.');
   }
   const currentS3Client = s3Client(); 
 
@@ -111,20 +112,24 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   let finalProjectName = 'untitled-project';
   
   try {
+    // Moved S3 config checks and directory creation inside the main try block
     if (!OLA_S3_BUCKET_NAME) {
         logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
         throw new Error('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); 
+    s3Client(); // Initialize S3 client and check for config issues. This might throw if config is bad.
+    logsRef.value += 'S3 client initialized and configuration seems present.\n';
 
-    await ensureDirectoryExists(TEMP_UPLOAD_DIR);
+    await ensureDirectoryExists(TEMP_UPLOAD_DIR); // Ensure base temporary upload directory exists
+    logsRef.value += `Base temporary upload directory ensured: ${TEMP_UPLOAD_DIR}\n`;
     
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const uniqueExtractionDir = path.join(TEMP_UPLOAD_DIR, uniqueId); 
     tempZipPath = path.join(uniqueExtractionDir, file.name); 
     extractionPath = path.join(uniqueExtractionDir, 'extracted'); 
-    await ensureDirectoryExists(extractionPath);
-    logsRef.value += `Root extraction path: ${extractionPath}\n`;
+    await ensureDirectoryExists(uniqueExtractionDir); // Ensure the specific directory for this upload exists
+    await ensureDirectoryExists(extractionPath); // Ensure the specific extraction path for this upload exists
+    logsRef.value += `Root extraction path for this deployment: ${extractionPath}\n`;
 
     logsRef.value += `Processing uploaded file: ${file.name}\n`;
     const fileBuffer = Buffer.from(await file.arrayBuffer());
@@ -153,7 +158,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       return { success: false, message: 'The uploaded ZIP file is empty or invalid.', logs: logsRef.value };
     }
 
-    logsRef.value += `Determining project name...\n`;
+    logsRef.value += `Suggesting project name...\n`;
     let aiSuggestion = '';
     try {
       const nameSuggestionOutput = await suggestProjectName({ fileNames: fileNamesInZip });
@@ -161,7 +166,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       logsRef.value += `AI suggested name (raw: "${nameSuggestionOutput.projectName}", sanitized: "${aiSuggestion}")\n`;
     } catch (error) {
       logsRef.value += `AI project name suggestion failed: ${(error as Error).message}. Using fallback.\n`;
-      aiSuggestion = 'untitled-project'; // Fallback
+      console.error('AI project name suggestion error:', error);
+      aiSuggestion = 'untitled-project'; 
     }
 
     const uploadedFileNameWithoutExtension = file.name.replace(/\.zip$/i, '');
@@ -175,7 +181,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       finalProjectName = fileBasedName;
       logsRef.value += `AI name unsuitable or unavailable. Using file-based name: ${finalProjectName}\n`;
     } else {
-      finalProjectName = 'untitled-project'; // Ensure it's set if other conditions fail
+      finalProjectName = 'untitled-project'; 
       logsRef.value += `Both AI and file-based names are unsuitable or too short. Using default name: ${finalProjectName}\n`;
     }
     
@@ -194,6 +200,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           const fullPath = path.join(dir, entry.name);
           const relativeToExtraction = path.relative(baseExtractionPath, fullPath);
           if (entry.isDirectory()) {
+            if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue; // Skip node_modules and hidden dirs
             await findFilesRecursive(fullPath);
           } else if (entry.name.toLowerCase() === 'package.json') {
             packageJsonPaths.push(relativeToExtraction);
@@ -206,8 +213,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       };
       await findFilesRecursive(currentSearchPath);
       
-      packageJsonPaths.sort((a, b) => a.split('/').length - b.split('/').length);
-      indexHtmlPaths.sort((a, b) => a.split('/').length - b.split('/').length);
+      packageJsonPaths.sort((a, b) => a.split(path.sep).length - b.split(path.sep).length);
+      indexHtmlPaths.sort((a, b) => a.split(path.sep).length - b.split(path.sep).length);
 
       if (packageJsonPaths.length > 0) {
         const chosenFile = packageJsonPaths[0];
@@ -231,7 +238,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         frameworkInput = { fileContents: analysisFileContent, fileNameAnalyzed: analysisFileRelativePath };
         logsRef.value += `Framework detection input: content of '${analysisFileRelativePath}'. Project root set to: ${projectRootPath}\n`;
     } else {
-        logsRef.value += `No suitable package.json or index.html found for framework detection. Defaulting to project root: ${projectRootPath}\n`;
+        projectRootPath = extractionPath; // Default project root to the base extraction if no key files found
+        logsRef.value += `No suitable package.json or index.html found for framework detection. Project root defaulted to: ${projectRootPath}\n`;
         frameworkInput = { fileContents: `No primary analysis files (package.json, index.html) found in ZIP. Analyzed files: ${fileNamesInZip.join(', ')}`, fileNameAnalyzed: 'none_found' };
     }
         
@@ -247,6 +255,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       }
     } catch (aiError: any) {
       logsRef.value += `AI framework detection failed: ${(aiError as Error).message}. Stack: ${aiError.stack || 'N/A'}. Assuming 'static' due to error.\n`;
+      console.error('AI framework detection error:', aiError);
       frameworkDetectionResult = { 
         framework: 'static', 
         confidence: 0.1, 
@@ -268,12 +277,13 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         logsRef.value += `npm install stdout:\n${installOutput.stdout || 'N/A'}\n`;
         if (installOutput.stderr) logsRef.value += `npm install stderr:\n${installOutput.stderr}\n`;
 
-        const buildCommand = frameworkDetectionResult.build_command || 'npm run build';
+        const buildCommand = frameworkDetectionResult.build_command || 'npm run build'; // Use AI suggestion or default
         logsRef.value += `Running build command: '${buildCommand}' in ${projectRootPath}...\n`;
         const buildOutput = await execAsync(buildCommand, { cwd: projectRootPath });
         logsRef.value += `Build command stdout:\n${buildOutput.stdout || 'N/A'}\n`;
         if (buildOutput.stderr) logsRef.value += `Build command stderr:\n${buildOutput.stderr}\n`;
 
+        // Use AI suggested output directory, or try common defaults if not provided or not found
         const suggestedOutputDir = frameworkDetectionResult.output_directory;
         const defaultOutputDirs = ['build', 'dist', 'out', '.next']; 
         const outputDirsToTry = suggestedOutputDir ? [suggestedOutputDir, ...defaultOutputDirs.filter(d => d !== suggestedOutputDir)] : defaultOutputDirs;
@@ -296,7 +306,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           try {
             const rootContents = await fs.readdir(projectRootPath, {withFileTypes: true});
             logsRef.value += rootContents.map(entry => `${entry.name}${entry.isDirectory() ? '/' : ''}`).join(', ') + '\n';
-          } catch(e) { logsRef.value += `Could not list contents of ${projectRootPath}: ${(e as Error).message}\nStack: ${(e as Error).stack}\n`; }
+          } catch(e: any) { logsRef.value += `Could not list contents of ${projectRootPath}: ${(e as Error).message}\nStack: ${(e as Error).stack}\n`; }
           throw new Error('Build output directory not found. Check build scripts and output configuration.');
         }
         
@@ -340,11 +350,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     };
 
   } catch (error: any) {
-    let detailedErrorMessage = error.message;
+    let detailedErrorMessage = error.message || "An unknown error occurred.";
     if (error.name && error.message && !error.message.toLowerCase().includes(error.name.toLowerCase())) { 
         detailedErrorMessage = `${error.name}: ${error.message}`;
+    } else if (error.name && !error.message) {
+        detailedErrorMessage = error.name;
     }
-    if (error.$metadata && error.$metadata.httpStatusCode) {
+    
+    if (error.$metadata && error.$metadata.httpStatusCode) { // S3 specific error details
         detailedErrorMessage += ` (S3 HTTP Status: ${error.$metadata.httpStatusCode})`;
     }
     
@@ -362,27 +375,24 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     };
   } finally {
     if (extractionPath) { 
-      const uniqueExtractionDirToDelete = path.dirname(extractionPath); 
+      const uniqueExtractionDirToDelete = path.dirname(tempZipPath); // This is 'uniqueExtractionDir'
       if (uniqueExtractionDirToDelete && uniqueExtractionDirToDelete.startsWith(TEMP_UPLOAD_DIR) && uniqueExtractionDirToDelete !== TEMP_UPLOAD_DIR) {
         logsRef.value += `Attempting to delete temporary directory: ${uniqueExtractionDirToDelete}\n`;
         fs.rm(uniqueExtractionDirToDelete, { recursive: true, force: true })
-          .then(() => logsRef.value += `Successfully deleted temporary directory: ${uniqueExtractionDirToDelete}\n`)
+          .then(() => {
+            logsRef.value += `Successfully deleted temporary directory: ${uniqueExtractionDirToDelete}\n`;
+            console.log(`Successfully deleted temporary directory: ${uniqueExtractionDirToDelete}`);
+          })
           .catch(err => {
-            logsRef.value += `Failed to delete temp extraction base folder: ${uniqueExtractionDirToDelete}. Error: ${err.message}\n`;
+            logsRef.value += `Failed to delete temp extraction base folder: ${uniqueExtractionDirToDelete}. Error: ${(err as Error).message}\n`;
             console.error(`Failed to delete temp extraction base folder: ${uniqueExtractionDirToDelete}`, err);
           });
       } else {
-          logsRef.value += `Skipping deletion of non-specific temporary directory: ${uniqueExtractionDirToDelete}\n`;
+          logsRef.value += `Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDirToDelete}\n`;
+          console.warn(`Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDirToDelete}`);
       }
-    } else if (tempZipPath) { 
-        logsRef.value += `Attempting to delete temporary zip file: ${tempZipPath}\n`;
-        fs.unlink(tempZipPath)
-          .then(() => logsRef.value += `Successfully deleted temporary zip file: ${tempZipPath}\n`)
-          .catch(err => {
-            logsRef.value += `Failed to delete temp zip: ${tempZipPath}. Error: ${err.message}\n`;
-            console.error(`Failed to delete temp zip: ${tempZipPath}`, err);
-          });
     }
+    // The tempZipPath itself is inside uniqueExtractionDirToDelete, so no separate unlink is needed if the dir is removed.
   }
 }
 
