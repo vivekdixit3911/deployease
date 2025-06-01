@@ -7,9 +7,9 @@ import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider, githubProvider } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Chrome, GithubIcon } from 'lucide-react'; // Using GithubIcon as lucide-react typically names it
+import { Chrome, GithubIcon } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Loader2 } from 'lucide-react';
 
 export default function LoginPage() {
   const { currentUser, loading } = useAuth();
@@ -25,7 +25,7 @@ export default function LoginPage() {
   const handleSignIn = async (provider: typeof googleProvider | typeof githubProvider) => {
     try {
       await signInWithPopup(auth, provider);
-      toast({ title: "Sign In Successful", description: "Welcome back!" });
+      toast({ title: "Sign In Successful", description: "Welcome!" });
       router.push('/dashboard');
     } catch (error: any) {
       console.error("Sign in error:", error);
@@ -37,44 +37,46 @@ export default function LoginPage() {
     }
   };
 
-  if (loading || (!loading && currentUser)) {
-    // Show loading or let useEffect handle redirect
+  if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p>Loading or Redirecting...</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-black p-4 text-white">
+        <Loader2 className="h-12 w-12 animate-spin mb-4" />
+        <p>Loading session...</p>
+      </div>
+    );
+  }
+  
+  // If already logged in (and not loading), useEffect will redirect. Show minimal loading state.
+  if (currentUser) {
+     return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-black p-4 text-white">
+        <Loader2 className="h-12 w-12 animate-spin mb-4" />
+        <p>Redirecting...</p>
       </div>
     );
   }
 
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-primary/10 via-background to-secondary/10 p-4">
-      <Card className="w-full max-w-md shadow-2xl">
-        <CardHeader className="text-center">
-          <CardTitle className="text-3xl font-bold tracking-tight text-primary">Welcome to DeployEase</CardTitle>
-          <CardDescription className="text-muted-foreground pt-2">
-            Sign in to deploy and manage your projects effortlessly.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6 p-8">
-          <Button
-            onClick={() => handleSignIn(googleProvider)}
-            className="w-full text-lg py-6 bg-red-600 hover:bg-red-700 text-white"
-          >
-            <Chrome className="h-6 w-6 mr-3" />
-            Sign in with Google
-          </Button>
-          <Button
-            onClick={() => handleSignIn(githubProvider)}
-            className="w-full text-lg py-6 bg-gray-800 hover:bg-gray-900 text-white"
-          >
-            <GithubIcon className="h-6 w-6 mr-3" />
-            Sign in with GitHub
-          </Button>
-        </CardContent>
-      </Card>
-       <p className="mt-8 text-center text-sm text-muted-foreground">
-        By signing in, you agree to our (non-existent) Terms of Service.
-      </p>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-black p-4">
+      <div className="space-y-6 w-full max-w-xs">
+        <Button
+          onClick={() => handleSignIn(googleProvider)}
+          variant="outline" // Uses themed outline for B&W
+          className="w-full text-lg py-6"
+        >
+          <Chrome className="h-6 w-6 mr-3" />
+          Sign in with Google
+        </Button>
+        <Button
+          onClick={() => handleSignIn(githubProvider)}
+          variant="outline" // Uses themed outline for B&W
+          className="w-full text-lg py-6"
+        >
+          <GithubIcon className="h-6 w-6 mr-3" />
+          Sign in with GitHub
+        </Button>
+      </div>
     </div>
   );
 }
