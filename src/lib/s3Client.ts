@@ -8,23 +8,29 @@ const OLA_S3_ACCESS_KEY_ID = process.env.OLA_S3_ACCESS_KEY_ID;
 const OLA_S3_SECRET_ACCESS_KEY = process.env.OLA_S3_SECRET_ACCESS_KEY;
 export const OLA_S3_BUCKET_NAME = process.env.OLA_S3_BUCKET_NAME;
 
-// Initial checks on server startup for quick feedback
+// Comprehensive startup checks for S3 configuration
+const criticalS3ConfigErrors: string[] = [];
 if (!OLA_S3_ENDPOINT) {
-  console.error("CRITICAL ERROR: OLA_S3_ENDPOINT is not defined in environment variables. S3 operations will fail.");
+  criticalS3ConfigErrors.push("OLA_S3_ENDPOINT is not defined in environment variables.");
 } else if (!OLA_S3_ENDPOINT.startsWith('http://') && !OLA_S3_ENDPOINT.startsWith('https://')) {
-  console.error(`CRITICAL ERROR: OLA_S3_ENDPOINT ("${OLA_S3_ENDPOINT}") is not a valid URL. It must start with http:// or https://. S3 operations will fail.`);
-}
-if (!OLA_S3_REGION) {
-  console.warn("WARNING: OLA_S3_REGION is not set in environment variables. Defaulting to 'us-east-1', but please verify this is correct for your Ola S3 provider.");
+  criticalS3ConfigErrors.push(`OLA_S3_ENDPOINT ("${OLA_S3_ENDPOINT}") is not a valid URL. It must start with http:// or https://.`);
 }
 if (!OLA_S3_ACCESS_KEY_ID) {
-  console.error("CRITICAL ERROR: OLA_S3_ACCESS_KEY_ID is not defined in environment variables. S3 operations will fail.");
+  criticalS3ConfigErrors.push("OLA_S3_ACCESS_KEY_ID is not defined in environment variables.");
 }
 if (!OLA_S3_SECRET_ACCESS_KEY) {
-  console.error("CRITICAL ERROR: OLA_S3_SECRET_ACCESS_KEY is not defined in environment variables. S3 operations will fail.");
+  criticalS3ConfigErrors.push("OLA_S3_SECRET_ACCESS_KEY is not defined in environment variables.");
 }
 if (!OLA_S3_BUCKET_NAME) {
-  console.error("CRITICAL ERROR: OLA_S3_BUCKET_NAME is not defined in environment variables. S3 operations will fail.");
+  criticalS3ConfigErrors.push("OLA_S3_BUCKET_NAME is not defined in environment variables.");
+}
+
+if (criticalS3ConfigErrors.length > 0) {
+  criticalS3ConfigErrors.forEach(msg => console.error(`CRITICAL S3 CONFIG ERROR: ${msg} S3 operations will likely fail.`));
+}
+
+if (!OLA_S3_REGION && criticalS3ConfigErrors.length === 0) { // Only warn if other critical errors are not present
+  console.warn("WARNING: OLA_S3_REGION is not set in environment variables. Defaulting to 'us-east-1', but please verify this is correct for your Ola S3 provider.");
 }
 
 
@@ -36,11 +42,9 @@ export class MissingS3ConfigError extends Error {
 }
 
 function getS3Client(): S3Client {
-  if (!OLA_S3_ENDPOINT) {
-    throw new MissingS3ConfigError("OLA_S3_ENDPOINT is not defined. This is required for S3 client initialization.");
-  }
-  if (!OLA_S3_ENDPOINT.startsWith('http://') && !OLA_S3_ENDPOINT.startsWith('https://')) {
-    throw new MissingS3ConfigError(`OLA_S3_ENDPOINT ("${OLA_S3_ENDPOINT}") is not a valid URL. It must start with http:// or https://.`);
+  // Re-check critical variables at the time of client creation
+  if (!OLA_S3_ENDPOINT || (!OLA_S3_ENDPOINT.startsWith('http://') && !OLA_S3_ENDPOINT.startsWith('https://'))) {
+    throw new MissingS3ConfigError("OLA_S3_ENDPOINT is missing or invalid. This is required for S3 client initialization.");
   }
   if (!OLA_S3_ACCESS_KEY_ID) {
     throw new MissingS3ConfigError("OLA_S3_ACCESS_KEY_ID is not defined. This is required for S3 client initialization.");
@@ -49,10 +53,12 @@ function getS3Client(): S3Client {
     throw new MissingS3ConfigError("OLA_S3_SECRET_ACCESS_KEY is not defined. This is required for S3 client initialization.");
   }
   if (!OLA_S3_BUCKET_NAME) {
-    throw new MissingS3ConfigError("OLA_S3_BUCKET_NAME is not defined. This is required for S3 client initialization.");
+    // Though bucket name isn't used for client config itself, it's essential for operations.
+    // This function is now the single point of truth for "is S3 usable?"
+    throw new MissingS3ConfigError("OLA_S3_BUCKET_NAME is not defined. This is required for S3 operations.");
   }
 
-  const s3Region = OLA_S3_REGION || 'us-east-1'; // Default if not set, with prior warning
+  const s3Region = OLA_S3_REGION || 'us-east-1';
 
   return new S3Client({
     endpoint: OLA_S3_ENDPOINT,
@@ -65,14 +71,22 @@ function getS3Client(): S3Client {
   });
 }
 
-// Initialize lazily to catch config errors on first use rather than server start only for thrown errors.
 let clientInstance: S3Client | null = null;
+let s3ClientError: Error | null = null;
 
 export const s3Client = (): S3Client => {
+  if (s3ClientError) {
+    // If initialization previously failed, throw that error again.
+    throw s3ClientError;
+  }
   if (!clientInstance) {
-    // This call will throw MissingS3ConfigError if critical configs are bad
-    // The console.error/warn above give immediate feedback on startup.
-    clientInstance = getS3Client();
+    try {
+      clientInstance = getS3Client();
+    } catch (error) {
+      s3ClientError = error as Error; // Store the initialization error
+      console.error("Failed to initialize S3 client:", s3ClientError.message);
+      throw s3ClientError; // Rethrow
+    }
   }
   return clientInstance;
 };
