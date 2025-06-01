@@ -1,3 +1,4 @@
+
 // src/components/deploy-ease/UploadCard.tsx
 'use client';
 
@@ -50,13 +51,14 @@ export function UploadCard() {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
-      // console.log("EventSource closed.");
+      // console.log("EventSource explicitly closed by client.");
     }
   }, []);
 
   useEffect(() => {
+    // Ensure cleanup on component unmount
     return () => {
-      cleanupEventSource(); // Cleanup on component unmount
+      cleanupEventSource();
     };
   }, [cleanupEventSource]);
 
@@ -65,7 +67,7 @@ export function UploadCard() {
     setCurrentStatus('Awaiting deployment...');
     setLogs([]);
     setFinalResult(null);
-    cleanupEventSource();
+    cleanupEventSource(); // Important: close any existing connection before starting new
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -74,7 +76,7 @@ export function UploadCard() {
       if (files[0].type === 'application/zip' || files[0].type === 'application/x-zip-compressed') {
         setFile(files[0]);
         setGithubUrl(''); 
-        resetDeploymentState();
+        resetDeploymentState(); // Reset before a new input
       } else {
         toast({
           title: "Invalid File Type",
@@ -96,7 +98,7 @@ export function UploadCard() {
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
-      resetDeploymentState();
+      resetDeploymentState(); // Reset before a new input
     }
   };
 
@@ -111,7 +113,7 @@ export function UploadCard() {
       return;
     }
 
-    resetDeploymentState();
+    resetDeploymentState(); // Clear previous state and close any existing EventSource
     setIsProcessing(true);
     setCurrentStatus('Initiating deployment...');
     setLogs([{ type: 'status', payload: 'Initiating deployment...', timestamp: new Date() }]);
@@ -124,15 +126,20 @@ export function UploadCard() {
       const initialResponse: InitialDeploymentResponse = await deployProject(formData);
 
       if (initialResponse.success && initialResponse.deploymentId) {
-        setCurrentStatus('Deployment in progress...');
+        setCurrentStatus('Deployment in progress, connecting to stream...');
         setLogs(prev => [...prev, { type: 'status', payload: `Connecting to stream (ID: ${initialResponse.deploymentId})...`, timestamp: new Date() }]);
         
+        // Ensure no old EventSource is lingering
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+        }
         const es = new EventSource(`/api/deploy-stream/${initialResponse.deploymentId}`);
         eventSourceRef.current = es;
 
         es.onopen = () => {
-          // console.log("EventSource connection opened.");
+          // console.log(`[CLIENT] EventSource connection opened for ${initialResponse.deploymentId}.`);
           setLogs(prev => [...prev, {type: 'status', payload: 'Real-time log stream connected.', timestamp: new Date()}]);
+          setCurrentStatus('Stream connected. Awaiting updates...');
         };
 
         es.addEventListener('log', (e) => {
@@ -143,11 +150,12 @@ export function UploadCard() {
         es.addEventListener('status', (e) => {
           const statusData = JSON.parse(e.data);
           setCurrentStatus(statusData);
-          // Avoid duplicate status logs if they come from the log event too.
+          // Optional: Add status to logs as well, if desired for history
           // setLogs(prev => [...prev, { type: 'status', payload: statusData, timestamp: new Date() }]);
         });
         
         es.addEventListener('complete', (e) => {
+          // console.log("[CLIENT] 'complete' event received.");
           const resultData: DeploymentCompletionPayload = JSON.parse(e.data);
           setFinalResult(resultData);
           setCurrentStatus(resultData.success ? 'Deployment Completed' : 'Deployment Failed');
@@ -157,57 +165,73 @@ export function UploadCard() {
             description: resultData.message,
             variant: resultData.success ? "default" : "destructive",
           });
-          cleanupEventSource();
-          setIsProcessing(false);
+          cleanupEventSource(); // Close after completion
+          setIsProcessing(false); // Done processing
         });
 
-        es.addEventListener('error', (e) => { // For specific errors sent by the server via SSE
+        es.addEventListener('error', (e) => { // For specific errors sent by the server via SSE 'error' event
+          // console.log("[CLIENT] 'error' event received from SSE stream:", e);
           let errorMessage = "An error occurred with the deployment stream.";
            try {
-            const errorData = JSON.parse(e.data); // SSE 'error' events might not have parsable data property
-            if (errorData && errorData.message) errorMessage = errorData.message;
-          } catch (parseError) { /* ignore if data is not JSON */ }
+            // SSE 'error' events typically don't have a JSON e.data unless server explicitly sends it
+            // For generic EventSource failures, e.data might be undefined or not JSON.
+            if (e && (e as MessageEvent).data) {
+                const errorData = JSON.parse((e as MessageEvent).data); 
+                if (errorData && errorData.message) errorMessage = errorData.message;
+            }
+          } catch (parseError) { 
+            // console.warn("[CLIENT] Could not parse error event data:", parseError);
+          }
 
           setLogs(prev => [...prev, { type: 'error', payload: errorMessage, timestamp: new Date() }]);
           setCurrentStatus('Stream error or deployment issue.');
           toast({ title: "Stream Error", description: errorMessage, variant: "destructive" });
-          cleanupEventSource();
-          setIsProcessing(false);
-          if (!finalResult) {
+          cleanupEventSource(); // Close on error
+          setIsProcessing(false); // Done processing (due to error)
+          if (!finalResult) { // Only set if not already set by 'complete'
             setFinalResult({ success: false, message: errorMessage, error: errorMessage });
           }
         });
 
-        es.onerror = (errorEvent) => { // For general EventSource connection failures
-          console.error("EventSource failed:", errorEvent);
-          setLogs(prev => [...prev, { type: 'error', payload: 'Connection to deployment stream lost or server error.', timestamp: new Date() }]);
-          setCurrentStatus('Stream connection failed.');
-          toast({ title: "Connection Error", description: "Lost connection to the deployment stream.", variant: "destructive" });
-          cleanupEventSource();
-          setIsProcessing(false); // Ensure processing state is updated
-          if (!finalResult) { // Set final result if not already set by a 'complete' event
-             setFinalResult({ success: false, message: "Connection to deployment stream lost or server error." });
+        // This is the generic EventSource.onerror for network errors or if the server closes the connection abruptly
+        es.onerror = (errorEvent) => { 
+          console.error("[CLIENT] EventSource generic error (es.onerror):", errorEvent);
+          // Avoid duplicate handling if 'error' event was already received and processed.
+          if (eventSourceRef.current) { // Check if it wasn't cleaned up by a specific 'error' or 'complete'
+            setLogs(prev => [...prev, { type: 'error', payload: 'Connection to deployment stream lost or server error.', timestamp: new Date() }]);
+            setCurrentStatus('Stream connection failed.');
+            toast({ title: "Connection Error", description: "Lost connection to the deployment stream.", variant: "destructive" });
+            cleanupEventSource(); // Close on generic error
+            setIsProcessing(false); // Done processing (due to error)
+            if (!finalResult) { // Only set if not already set by 'complete' or specific 'error'
+               setFinalResult({ success: false, message: "Connection to deployment stream lost or server error." });
+            }
           }
         };
 
       } else {
-        // Initial call to deployProject action failed
+        // Initial call to deployProject action failed (didn't return success or deploymentId)
         setCurrentStatus('Failed to initiate deployment.');
-        const message = initialResponse.message || "Unknown initiation error.";
+        const message = initialResponse.message || "Unknown error during deployment initiation.";
         setLogs(prev => [...prev, { type: 'error', payload: message, timestamp: new Date() }]);
         toast({ title: "Initiation Failed", description: message, variant: "destructive" });
-        setFinalResult({ success: false, message: message });
+        if (!finalResult) {
+            setFinalResult({ success: false, message: message });
+        }
         setIsProcessing(false);
       }
     } catch (error) {
-      // Catch errors from the deployProject action call itself
-      setIsProcessing(false);
+      // Catch errors from the deployProject action call itself (e.g., network error calling the action)
       const errorMessage = error instanceof Error ? error.message : "An unexpected error occurred during initiation.";
       setCurrentStatus(`Initiation critically failed: ${errorMessage.substring(0,100)}`);
       setLogs(prev => [...prev, { type: 'error', payload: errorMessage, timestamp: new Date() }]);
       toast({ title: "Deployment Initiation Critical Error", description: errorMessage, variant: "destructive" });
-      setFinalResult({ success: false, message: errorMessage });
-      console.error("handleSubmit critical error:", error);
+      if (!finalResult) {
+        setFinalResult({ success: false, message: errorMessage });
+      }
+      setIsProcessing(false); // Ensure processing stops
+      cleanupEventSource(); // Clean up if any ES was somehow setup
+      console.error("[CLIENT] handleSubmit critical error (calling deployProject action):", error);
     }
   };
 
@@ -256,7 +280,7 @@ export function UploadCard() {
           </form>
         )}
 
-        {(isProcessing || logs.length > 1 || finalResult) && ( // Show logs if processing, or if there's a result or more than initial log
+        {(logs.length > 0 || finalResult) && ( // Show logs if there are any logs or a final result
           <div className="mt-6 p-4 border rounded-lg bg-muted/50">
             <h3 className="text-xl font-semibold mb-3 flex items-center">
               <ListChecks className="h-6 w-6 text-primary mr-2" />
@@ -311,13 +335,13 @@ export function UploadCard() {
                   className="inline-flex items-center text-primary hover:underline font-semibold"
                 >
                   <LinkIcon className="h-4 w-4 mr-2" />
-                  View Deployed Site: {finalResult.deployedUrl}
+                  View Deployed Site (Note: may take a moment for S3 propagation)
                 </a>
               </p>
             )}
              <Button onClick={() => {
-                resetDeploymentState();
-                setFile(null);
+                resetDeploymentState(); // This will also clear file/URL and logs
+                setFile(null); 
                 setGithubUrl('');
                 if (fileInputRef.current) fileInputRef.current.value = "";
              }} className="mt-6 w-full">
@@ -329,9 +353,10 @@ export function UploadCard() {
       </CardContent>
       <CardFooter>
         <p className="text-xs text-muted-foreground text-center w-full">
-          {isProcessing ? "Following real-time deployment steps..." : "Ready to deploy your project."}
+          {isProcessing ? "Processing deployment, please wait..." : "Ready to deploy your project."}
         </p>
       </CardFooter>
     </Card>
   );
 }
+
