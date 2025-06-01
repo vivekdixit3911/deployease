@@ -51,7 +51,7 @@ export default function HomePage() {
       <div className="relative z-10 flex flex-col items-center">
         <h1 
           className="text-7xl sm:text-8xl md:text-9xl font-bold tracking-tight mb-12 animate-fadeIn animated-gradient-text-fill"
-          data-text="DeployEase" // Added data-text attribute
+          data-text="DeployEase"
         >
           DeployEase
         </h1>
@@ -60,7 +60,7 @@ export default function HomePage() {
           <Button
             onClick={() => handleSignIn(googleProvider)}
             variant="outline" 
-            className="w-full text-lg py-6 bg-white text-black border border-gray-600 hover:bg-gray-100 transition-all duration-300 ease-in-out transform hover:scale-105"
+            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:text-black hover:border-gray-400 transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with Google"
           >
             <Chrome className="h-6 w-6 mr-3" />
@@ -69,7 +69,7 @@ export default function HomePage() {
           <Button
             onClick={() => handleSignIn(githubProvider)}
             variant="outline" 
-            className="w-full text-lg py-6 bg-white text-black border border-gray-600 hover:bg-gray-100 transition-all duration-300 ease-in-out transform hover:scale-105"
+            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:text-black hover:border-gray-400 transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with GitHub"
           >
             <GithubIcon className="h-6 w-6 mr-3" /> 
