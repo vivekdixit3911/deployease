@@ -125,7 +125,7 @@
 .animated-gradient-text-fill {
   position: relative; /* For positioning pseudo-elements */
   background: linear-gradient(
-    270deg,
+    90deg, /* Changed from 270deg to 90deg for left-to-right gradient */
     hsl(0, 100%, 60%),   /* Bright Red */
     hsl(30, 100%, 55%),  /* Bright Orange */
     hsl(60, 100%, 50%),  /* Bright Yellow */
@@ -136,14 +136,13 @@
     hsl(300, 100%, 55%), /* Bright Magenta */
     hsl(0, 100%, 60%)    /* Loop back to Red for smoother animation */
   );
-  background-size: 250% 250%; /* Tighter for more dynamic movement */
+  background-size: 250% 250%; 
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   text-fill-color: transparent;
   animation: animatedTextGradient 10s linear infinite, textGlow 2.5s ease-in-out infinite alternate;
   display: inline-block; /* Important for background-clip and pseudo-elements */
-  /* Ensure data-text attribute is set on the HTML element for pseudo-elements to work */
 }
 
 .animated-gradient-text-fill::before,
@@ -165,14 +164,14 @@
 }
 
 .animated-gradient-text-fill::before {
-  background-image: radial-gradient(circle, hsla(0, 0%, 100%, 0.7) 0.5px, transparent 1px); /* Brighter, smaller sparkles */
-  background-size: 25px 25px; /* Slightly adjusted size */
-  animation: sparkleEffect 4s linear infinite; /* Slower, more distinct sparkle movement */
+  background-image: radial-gradient(circle, hsla(0, 0%, 100%, 0.7) 0.5px, transparent 1px); 
+  background-size: 25px 25px; 
+  animation: sparkleEffect 4s linear infinite; 
 }
 
 .animated-gradient-text-fill::after {
-  background-image: radial-gradient(circle, hsla(0, 0%, 100%, 0.5) 0.75px, transparent 1.5px); /* Softer, slightly larger sparkles */
-  background-size: 35px 35px; /* Slightly adjusted size */
+  background-image: radial-gradient(circle, hsla(0, 0%, 100%, 0.5) 0.75px, transparent 1.5px); 
+  background-size: 35px 35px; 
   animation: sparkleEffect 4s linear infinite reverse; 
-  animation-delay: -2s; /* Offset start to desynchronize from ::before */
+  animation-delay: -2s; 
 }
