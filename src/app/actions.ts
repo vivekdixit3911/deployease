@@ -11,16 +11,24 @@ import mime from 'mime-types';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, OLA_S3_BUCKET_NAME } from '@/lib/s3Client';
 import { TEMP_UPLOAD_DIR } from '@/config/constants';
-import { suggestProjectName } from '@/ai/flows/suggest-project-name';
-import { detectFramework, DetectFrameworkInput, DetectFrameworkOutput } from '@/ai/flows/detect-framework';
+// AI Imports are no longer needed
+// import { suggestProjectName } from '@/ai/flows/suggest-project-name';
+// import { detectFramework, DetectFrameworkInput, DetectFrameworkOutput } from '@/ai/flows/detect-framework';
 
 const execAsync = promisify(exec);
+
+interface FrameworkDetectionResult {
+  framework: 'react' | 'static';
+  build_command?: string;
+  output_directory?: string;
+  reasoning?: string;
+}
 
 interface DeploymentResult {
   success: boolean;
   message: string;
   projectName?: string;
-  framework?: DetectFrameworkOutput['framework'];
+  framework?: FrameworkDetectionResult['framework'];
   build_command?: string;
   output_directory?: string;
   deployedUrl?: string;
@@ -78,12 +86,56 @@ const sanitizeName = (name: string | undefined | null): string => {
   if (!name) return '';
   return name
     .trim()
+    .replace(/\.zip$/i, '') // Remove .zip extension
     .replace(/\s+/g, '-')
     .replace(/[^a-zA-Z0-9-]/g, '')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .toLowerCase();
 };
+
+function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyzed: string, logsRef: { value: string }): FrameworkDetectionResult {
+  logsRef.value += `Performing non-AI framework detection based on ${fileNameAnalyzed}.\n`;
+  if (packageJsonContent && fileNameAnalyzed.includes('package.json')) {
+    try {
+      const pkg = JSON.parse(packageJsonContent);
+      const dependencies = { ...pkg.dependencies, ...pkg.devDependencies };
+      const scripts = pkg.scripts || {};
+
+      if (dependencies.next) {
+        logsRef.value += "Detected Next.js (dependency found).\n";
+        return { framework: 'react', build_command: scripts['build:next'] || scripts.build || 'npm run build', output_directory: '.next', reasoning: "Next.js dependency found." };
+      }
+      if (dependencies['react-scripts']) {
+        logsRef.value += "Detected Create React App (react-scripts dependency found).\n";
+        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'build', reasoning: "Create React App (react-scripts) dependency found." };
+      }
+      if (dependencies.vite && (dependencies['@vitejs/plugin-react'] || dependencies['@vitejs/plugin-react-swc'])) {
+        logsRef.value += "Detected Vite with React (dependencies found).\n";
+        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'dist', reasoning: "Vite with React plugin detected." };
+      }
+      if (dependencies['@remix-run/dev'] || dependencies.remix) {
+        logsRef.value += "Detected Remix (dependency found).\n";
+        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'public/build', reasoning: "Remix dependency found." };
+      }
+      if (dependencies.react && dependencies['react-dom']) {
+        logsRef.value += "Detected Generic React (react and react-dom dependencies found).\n";
+        return { framework: 'react', build_command: scripts.build || 'npm run build', output_directory: 'dist', reasoning: "Found react and react-dom in dependencies." };
+      }
+      logsRef.value += "package.json found, but no clear React indicators. Assuming static.\n";
+      return { framework: 'static', reasoning: "package.json present but no specific React framework indicators found." };
+    } catch (e) {
+      logsRef.value += `Error parsing package.json: ${(e as Error).message}. Assuming static.\n`;
+      return { framework: 'static', reasoning: "Failed to parse package.json." };
+    }
+  } else if (fileNameAnalyzed.includes('index.html')) {
+    logsRef.value += "No package.json prioritized. index.html found. Assuming static.\n";
+    return { framework: 'static', reasoning: "index.html found, no package.json prioritized." };
+  }
+  
+  logsRef.value += "No package.json or index.html found for analysis. Assuming static.\n";
+  return { framework: 'static', reasoning: "No definitive project files (package.json, index.html) found." };
+}
 
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
@@ -101,34 +153,30 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   let tempZipPath = '';
   let extractionPath = ''; 
   let projectRootPath = ''; 
-  let frameworkDetectionResult: DetectFrameworkOutput = { 
+  let frameworkDetectionResult: FrameworkDetectionResult = { 
     framework: 'static', 
-    confidence: 0, 
     reasoning: "Initial value",
-    build_command: undefined,
-    output_directory: undefined
   };
   const minNameLength = 3;
   let finalProjectName = 'untitled-project';
   
   try {
-    // Moved S3 config checks and directory creation inside the main try block
     if (!OLA_S3_BUCKET_NAME) {
         logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
         throw new Error('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); // Initialize S3 client and check for config issues. This might throw if config is bad.
+    s3Client(); 
     logsRef.value += 'S3 client initialized and configuration seems present.\n';
 
-    await ensureDirectoryExists(TEMP_UPLOAD_DIR); // Ensure base temporary upload directory exists
+    await ensureDirectoryExists(TEMP_UPLOAD_DIR); 
     logsRef.value += `Base temporary upload directory ensured: ${TEMP_UPLOAD_DIR}\n`;
     
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     const uniqueExtractionDir = path.join(TEMP_UPLOAD_DIR, uniqueId); 
     tempZipPath = path.join(uniqueExtractionDir, file.name); 
     extractionPath = path.join(uniqueExtractionDir, 'extracted'); 
-    await ensureDirectoryExists(uniqueExtractionDir); // Ensure the specific directory for this upload exists
-    await ensureDirectoryExists(extractionPath); // Ensure the specific extraction path for this upload exists
+    await ensureDirectoryExists(uniqueExtractionDir); 
+    await ensureDirectoryExists(extractionPath); 
     logsRef.value += `Root extraction path for this deployment: ${extractionPath}\n`;
 
     logsRef.value += `Processing uploaded file: ${file.name}\n`;
@@ -158,35 +206,19 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       return { success: false, message: 'The uploaded ZIP file is empty or invalid.', logs: logsRef.value };
     }
 
-    logsRef.value += `Suggesting project name...\n`;
-    let aiSuggestion = '';
-    try {
-      const nameSuggestionOutput = await suggestProjectName({ fileNames: fileNamesInZip });
-      aiSuggestion = sanitizeName(nameSuggestionOutput.projectName);
-      logsRef.value += `AI suggested name (raw: "${nameSuggestionOutput.projectName}", sanitized: "${aiSuggestion}")\n`;
-    } catch (error) {
-      logsRef.value += `AI project name suggestion failed: ${(error as Error).message}. Using fallback.\n`;
-      console.error('AI project name suggestion error:', error);
-      aiSuggestion = 'untitled-project'; 
-    }
+    logsRef.value += `Determining project name from filename...\n`;
+    const fileBasedName = sanitizeName(file.name);
+    logsRef.value += `Uploaded file name (raw: "${file.name}", sanitized: "${fileBasedName}")\n`;
 
-    const uploadedFileNameWithoutExtension = file.name.replace(/\.zip$/i, '');
-    const fileBasedName = sanitizeName(uploadedFileNameWithoutExtension);
-    logsRef.value += `Uploaded file name (raw: "${file.name}", base: "${uploadedFileNameWithoutExtension}", sanitized: "${fileBasedName}")\n`;
-
-    if (aiSuggestion && aiSuggestion !== 'untitled-project' && aiSuggestion.length >= minNameLength) {
-      finalProjectName = aiSuggestion;
-      logsRef.value += `Using AI suggested name: ${finalProjectName}\n`;
-    } else if (fileBasedName && fileBasedName.length >= minNameLength) {
+    if (fileBasedName && fileBasedName.length >= minNameLength) {
       finalProjectName = fileBasedName;
-      logsRef.value += `AI name unsuitable or unavailable. Using file-based name: ${finalProjectName}\n`;
+      logsRef.value += `Using file-based name: ${finalProjectName}\n`;
     } else {
-      finalProjectName = 'untitled-project'; 
-      logsRef.value += `Both AI and file-based names are unsuitable or too short. Using default name: ${finalProjectName}\n`;
+      finalProjectName = 'web-deployment'; // Default if sanitized filename is too short
+      logsRef.value += `File-based name unsuitable or too short. Using default name: ${finalProjectName}\n`;
     }
     
-    logsRef.value += `Detecting framework...\n`;
-    let frameworkInput: DetectFrameworkInput = { fileContents: 'No package.json or index.html found for analysis.', fileNameAnalyzed: 'unknown' };
+    logsRef.value += `Detecting framework (non-AI)...\n`;
     let analysisFileRelativePath: string | null = null;
     let analysisFileContent: string | null = null;
 
@@ -200,7 +232,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           const fullPath = path.join(dir, entry.name);
           const relativeToExtraction = path.relative(baseExtractionPath, fullPath);
           if (entry.isDirectory()) {
-            if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue; // Skip node_modules and hidden dirs
+            if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
             await findFilesRecursive(fullPath);
           } else if (entry.name.toLowerCase() === 'package.json') {
             packageJsonPaths.push(relativeToExtraction);
@@ -235,35 +267,22 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     analysisFileContent = analysisResult.content;
     
     if (analysisFileRelativePath && analysisFileContent) {
-        frameworkInput = { fileContents: analysisFileContent, fileNameAnalyzed: analysisFileRelativePath };
         logsRef.value += `Framework detection input: content of '${analysisFileRelativePath}'. Project root set to: ${projectRootPath}\n`;
+        logsRef.value += `Content for framework detection (first 500 chars of ${analysisFileRelativePath}):\n---\n${analysisFileContent.substring(0, 500)}${analysisFileContent.length > 500 ? '...' : ''}\n---\n`;
+        frameworkDetectionResult = nonAIDetectFramework(analysisFileContent, analysisFileRelativePath, logsRef);
     } else {
-        projectRootPath = extractionPath; // Default project root to the base extraction if no key files found
+        projectRootPath = extractionPath; 
         logsRef.value += `No suitable package.json or index.html found for framework detection. Project root defaulted to: ${projectRootPath}\n`;
-        frameworkInput = { fileContents: `No primary analysis files (package.json, index.html) found in ZIP. Analyzed files: ${fileNamesInZip.join(', ')}`, fileNameAnalyzed: 'none_found' };
+        frameworkDetectionResult = nonAIDetectFramework(null, 'none_found', logsRef);
     }
         
-    logsRef.value += `Content for framework detection (first 500 chars of ${frameworkInput.fileNameAnalyzed}):\n---\n${frameworkInput.fileContents.substring(0, 500)}${frameworkInput.fileContents.length > 500 ? '...' : ''}\n---\n`;
-
-    try {
-      frameworkDetectionResult = await detectFramework(frameworkInput);
-      logsRef.value += `AI Detected framework: ${frameworkDetectionResult.framework} (Confidence: ${frameworkDetectionResult.confidence})\n`;
-      logsRef.value += `AI Reasoning: ${frameworkDetectionResult.reasoning || 'N/A'}\n`;
-      if (frameworkDetectionResult.framework === 'react') {
-        logsRef.value += `AI Suggested build command: ${frameworkDetectionResult.build_command || 'N/A'}\n`;
-        logsRef.value += `AI Suggested output directory: ${frameworkDetectionResult.output_directory || 'N/A'}\n`;
-      }
-    } catch (aiError: any) {
-      logsRef.value += `AI framework detection failed: ${(aiError as Error).message}. Stack: ${aiError.stack || 'N/A'}. Assuming 'static' due to error.\n`;
-      console.error('AI framework detection error:', aiError);
-      frameworkDetectionResult = { 
-        framework: 'static', 
-        confidence: 0.1, 
-        reasoning: "AI detection failed, defaulted to static",
-        build_command: undefined,
-        output_directory: undefined
-      };
+    logsRef.value += `Detected framework: ${frameworkDetectionResult.framework}\n`;
+    logsRef.value += `Reasoning: ${frameworkDetectionResult.reasoning || 'N/A'}\n`;
+    if (frameworkDetectionResult.framework === 'react') {
+      logsRef.value += `Build command: ${frameworkDetectionResult.build_command || 'N/A'}\n`;
+      logsRef.value += `Output directory: ${frameworkDetectionResult.output_directory || 'N/A'}\n`;
     }
+
 
     const s3ProjectBaseKey = `sites/${finalProjectName}`; 
     logsRef.value += `Final detected framework for build process: ${frameworkDetectionResult.framework}\n`;
@@ -277,14 +296,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         logsRef.value += `npm install stdout:\n${installOutput.stdout || 'N/A'}\n`;
         if (installOutput.stderr) logsRef.value += `npm install stderr:\n${installOutput.stderr}\n`;
 
-        const buildCommand = frameworkDetectionResult.build_command || 'npm run build'; // Use AI suggestion or default
+        const buildCommand = frameworkDetectionResult.build_command || 'npm run build'; 
         logsRef.value += `Running build command: '${buildCommand}' in ${projectRootPath}...\n`;
         const buildOutput = await execAsync(buildCommand, { cwd: projectRootPath });
         logsRef.value += `Build command stdout:\n${buildOutput.stdout || 'N/A'}\n`;
         if (buildOutput.stderr) logsRef.value += `Build command stderr:\n${buildOutput.stderr}\n`;
 
-        // Use AI suggested output directory, or try common defaults if not provided or not found
         const suggestedOutputDir = frameworkDetectionResult.output_directory;
+        // Use a more flexible set of default output dirs if non-AI detection doesn't provide one
         const defaultOutputDirs = ['build', 'dist', 'out', '.next']; 
         const outputDirsToTry = suggestedOutputDir ? [suggestedOutputDir, ...defaultOutputDirs.filter(d => d !== suggestedOutputDir)] : defaultOutputDirs;
         
@@ -357,7 +376,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         detailedErrorMessage = error.name;
     }
     
-    if (error.$metadata && error.$metadata.httpStatusCode) { // S3 specific error details
+    if (error.$metadata && error.$metadata.httpStatusCode) { 
         detailedErrorMessage += ` (S3 HTTP Status: ${error.$metadata.httpStatusCode})`;
     }
     
@@ -369,13 +388,13 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         message: `Deployment failed. ${detailedErrorMessage}`,
         logs: logsRef.value,
         projectName: finalProjectName,
-        framework: frameworkDetectionResult.framework,
-        build_command: frameworkDetectionResult.build_command,
-        output_directory: frameworkDetectionResult.output_directory
+        framework: frameworkDetectionResult?.framework, // It might be undefined if error happens before it's set
+        build_command: frameworkDetectionResult?.build_command,
+        output_directory: frameworkDetectionResult?.output_directory
     };
   } finally {
     if (extractionPath) { 
-      const uniqueExtractionDirToDelete = path.dirname(tempZipPath); // This is 'uniqueExtractionDir'
+      const uniqueExtractionDirToDelete = path.dirname(tempZipPath); 
       if (uniqueExtractionDirToDelete && uniqueExtractionDirToDelete.startsWith(TEMP_UPLOAD_DIR) && uniqueExtractionDirToDelete !== TEMP_UPLOAD_DIR) {
         logsRef.value += `Attempting to delete temporary directory: ${uniqueExtractionDirToDelete}\n`;
         fs.rm(uniqueExtractionDirToDelete, { recursive: true, force: true })
@@ -392,7 +411,5 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
           console.warn(`Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDirToDelete}`);
       }
     }
-    // The tempZipPath itself is inside uniqueExtractionDirToDelete, so no separate unlink is needed if the dir is removed.
   }
 }
-
