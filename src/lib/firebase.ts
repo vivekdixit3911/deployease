@@ -1,35 +1,37 @@
 // src/lib/firebase.ts
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth';
-// import { getFirestore } from 'firebase/firestore'; // For later use with user project data
+import { getAnalytics, isSupported } from 'firebase/analytics'; // For Firebase Analytics
 
+// Your web app's Firebase configuration (as provided)
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-  measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID, // Optional
+  apiKey: "AIzaSyBlzmOXM8QzXrT-kWdSNH2jmKtcxuk7Y1c",
+  authDomain: "deeps-e3fe9.firebaseapp.com",
+  projectId: "deeps-e3fe9",
+  storageBucket: "deeps-e3fe9.appspot.com", // Corrected from firebasestorage.app to appspot.com
+  messagingSenderId: "575487461961",
+  appId: "1:575487461961:web:6e7375597a671da4ed4d98",
+  measurementId: "G-F37LTB2835"
 };
 
 let app: FirebaseApp;
+let analytics;
 
 if (!getApps().length) {
-  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
-    app = initializeApp(firebaseConfig);
-  } else {
-    console.warn(
-      'Firebase config (apiKey or projectId) is missing. Firebase App not initialized. Ensure .env file is populated with NEXT_PUBLIC_FIREBASE_... variables.'
-    );
-    // Fallback or throw error if Firebase is critical and not configured
-    // For now, we'll let it proceed, but auth features won't work.
-    // @ts-ignore // Allow app to be potentially uninitialized if config is missing
-    app = undefined; 
-  }
+  app = initializeApp(firebaseConfig);
 } else {
   app = getApps()[0];
 }
+
+// Initialize Analytics if supported
+isSupported().then((supported) => {
+  if (supported) {
+    analytics = getAnalytics(app);
+  } else {
+    console.log("Firebase Analytics is not supported in this environment.");
+  }
+});
+
 
 const auth = getAuth(app);
 // const db = getFirestore(app); // For later use
@@ -37,4 +39,4 @@ const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 const githubProvider = new GithubAuthProvider();
 
-export { app, auth, googleProvider, githubProvider /*, db */ };
+export { app, auth, googleProvider, githubProvider, analytics /*, db */ };
