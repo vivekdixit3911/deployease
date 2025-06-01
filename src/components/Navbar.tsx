@@ -4,7 +4,7 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
-import { LogIn, LogOut, UserCircle, LayoutDashboard, UploadCloud } from 'lucide-react';
+import { LogIn, LogOut, UserCircle, LayoutDashboard } from 'lucide-react'; // Removed UploadCloud as it's no longer used
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 export function Navbar() {
@@ -20,13 +20,8 @@ export function Navbar() {
   return (
     <nav className="bg-card shadow-md sticky top-0 z-50">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          <div className="flex items-center">
-            <Link href="/" className="flex items-center text-primary hover:text-primary/80 transition-colors">
-              <UploadCloud className="h-7 w-7 mr-2" />
-              <span className="font-bold text-2xl tracking-tight">DeployEase</span>
-            </Link>
-          </div>
+        <div className="flex items-center justify-end h-16"> {/* Changed justify-between to justify-end */}
+          {/* "DeployEase" branding (icon and title) has been removed */}
           <div className="flex items-center space-x-3">
             {!loading && currentUser && (
               <>
