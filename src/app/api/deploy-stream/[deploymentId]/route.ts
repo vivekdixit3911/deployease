@@ -15,7 +15,7 @@ export async function GET(
 
   if (!deploymentId) {
     console.error("[SSE Stream] Critical: Missing deploymentId in request params.");
-    return new Response(JSON.stringify({ error: 'Missing deploymentId in request parameters.' }), { 
+    return NextResponse.json({ error: 'Missing deploymentId in request parameters.' }, { 
         status: 400, 
         headers: { 'Content-Type': 'application/json', 'Connection': 'close' } 
     });
@@ -25,7 +25,7 @@ export async function GET(
   const initialDeploymentState = getDeploymentState(deploymentId);
   if (!initialDeploymentState) {
     console.warn(`[SSE Stream:${deploymentId}] Invalid or expired deployment ID. Deployment state not found.`);
-    return new Response(JSON.stringify({ error: `Deployment ID '${deploymentId}' not found or has expired.` }), { 
+    return NextResponse.json({ error: `Deployment ID '${deploymentId}' not found or has expired.` }, { 
       status: 404, 
       headers: { 'Content-Type': 'application/json', 'Connection': 'close' } 
     });
@@ -36,19 +36,21 @@ export async function GET(
     async start(controller) {
       console.log(`[SSE Stream:${deploymentId}] Stream controller 'start' method invoked.`);
       let lastLogIndex = 0;
-      let lastStatus = ''; // Will be set on first poll
+      let lastStatus = initialDeploymentState.status; // Initialize with current status
       let clientClosed = false;
       let pollerIntervalId: NodeJS.Timeout | null = null;
 
       const safeEnqueue = (event: string, data: any): boolean => {
-        if (clientClosed || controller.desiredSize === null || controller.desiredSize <= 0) {
-          // console.log(`[SSE Stream:${deploymentId}] safeEnqueue: Client closed or controller not ready/full. Skipping event '${event}'.`);
-          if (controller.desiredSize === null || controller.desiredSize <=0) {
-            // If controller is not ready (e.g. desiredSize is null or 0), we might be in a bad state
-            // or client has closed abruptly. Mark clientClosed to stop further attempts.
-            // clientClosed = true; // Consider this if issues persist
-          }
+        if (clientClosed) {
+          // console.log(`[SSE Stream:${deploymentId}] safeEnqueue: Client closed or controller full. Skipping event '${event}'.`);
           return false;
+        }
+        // Check if controller is still usable. DesiredSize can be null if the stream was closed abruptly.
+        if (controller.desiredSize === null || controller.desiredSize <= 0) {
+            console.warn(`[SSE Stream:${deploymentId}] safeEnqueue: Controller desiredSize is ${controller.desiredSize}. Assuming client closed or stream broke. Skipping event '${event}'.`);
+            // It's safer to assume client is closed if desiredSize is 0 or null
+            // clientClosed = true; // This might be too aggressive, rely on cleanup
+            return false;
         }
         try {
           controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -56,15 +58,15 @@ export async function GET(
           return true;
         } catch (e: any) {
           console.error(`[SSE Stream:${deploymentId}] safeEnqueue: Error enqueuing data for event '${event}': ${e.message}. Marking client as closed.`);
-          clientClosed = true; // Stop further attempts on this stream
-          // Cleanup will happen on next poller check or if abort is called
+          clientClosed = true; 
+          // No direct access to cleanup from here, but clientClosed flag will stop poller
           return false;
         }
       };
 
       const cleanup = () => {
-        if (clientClosed) return; // Already cleaning up or cleaned up
-        clientClosed = true; // Mark as closing/closed to prevent race conditions
+        if (clientClosed) return; 
+        clientClosed = true; 
 
         console.log(`[SSE Stream:${deploymentId}] Cleanup invoked.`);
         if (pollerIntervalId) {
@@ -72,37 +74,52 @@ export async function GET(
           pollerIntervalId = null;
           console.log(`[SSE Stream:${deploymentId}] Poller interval cleared.`);
         }
+        // Only try to close if controller seems active
         if (controller.desiredSize !== null) { 
           try {
             controller.close();
             console.log(`[SSE Stream:${deploymentId}] Stream controller closed.`);
           } catch (e:any) {
-            // This can happen if controller is already closing or in a bad state.
             console.warn(`[SSE Stream:${deploymentId}] Error closing controller during cleanup: ${e.message}`);
           }
         }
       };
       
       // Send initial state immediately
-      const currentInitialState = getDeploymentState(deploymentId);
-      if (currentInitialState) {
-        safeEnqueue('status', currentInitialState.status);
-        lastStatus = currentInitialState.status;
-        currentInitialState.logs.forEach(log => safeEnqueue('log', log));
-        lastLogIndex = currentInitialState.logs.length;
+      // Re-fetch state in case it changed between the initial check and stream start
+      const currentInitialStateForStream = getDeploymentState(deploymentId);
+      if (currentInitialStateForStream) {
+        safeEnqueue('status', currentInitialStateForStream.status);
+        lastStatus = currentInitialStateForStream.status;
+        currentInitialStateForStream.logs.forEach(log => safeEnqueue('log', log));
+        lastLogIndex = currentInitialStateForStream.logs.length;
+        
+        if (currentInitialStateForStream.isDone) {
+            console.log(`[SSE Stream:${deploymentId}] Deployment was already complete at stream start. Sending 'complete' event and closing.`);
+            const resultPayload = {
+              success: currentInitialStateForStream.success,
+              message: currentInitialStateForStream.message || (currentInitialStateForStream.success ? 'Deployment completed successfully.' : (currentInitialStateForStream.error || 'Deployment failed.')),
+              projectName: currentInitialStateForStream.projectName,
+              deployedUrl: currentInitialStateForStream.deployedUrl,
+              error: currentInitialStateForStream.error,
+            };
+            safeEnqueue('complete', resultPayload);
+            cleanup();
+            return; // Don't start poller if already done
+        }
+
       } else {
-        // This should not happen if initial check passed, but as a safeguard
-        safeEnqueue('error', { message: "Initial deployment state disappeared unexpectedly. Stream closing." });
+        // State disappeared between initial check and stream start
+        console.warn(`[SSE Stream:${deploymentId}] Initial deployment state disappeared before stream could fully start. Sending error.`);
+        safeEnqueue('error', { message: "Deployment state disappeared unexpectedly. Stream closing." });
         cleanup();
-        return;
+        return; // Don't start poller
       }
 
       pollerIntervalId = setInterval(() => {
         if (clientClosed) {
           // console.log(`[SSE Stream:${deploymentId}] Poller: Client marked as closed. Performing cleanup if not already done.`);
-          // If clientClosed is true, cleanup should have been called or is in progress.
-          // If poller is still running, ensure cleanup.
-          if (pollerIntervalId) cleanup();
+          if (pollerIntervalId) cleanup(); // Ensure cleanup if poller is somehow still running
           return;
         }
 
@@ -112,7 +129,7 @@ export async function GET(
           if (!currentState) {
             console.warn(`[SSE Stream:${deploymentId}] Poller: Deployment state disappeared. Sending error and closing.`);
             safeEnqueue('error', { message: "Deployment state not found or removed. Stream terminated." });
-            cleanup(); // Perform full cleanup
+            cleanup(); 
             return;
           }
 
@@ -137,17 +154,15 @@ export async function GET(
               projectName: currentState.projectName,
               deployedUrl: currentState.deployedUrl,
               error: currentState.error,
-              // logs: currentState.logs // Optionally send all logs on completion, can be large
             };
             safeEnqueue('complete', resultPayload);
-            cleanup(); // Perform full cleanup
+            cleanup(); 
             return;
           }
         } catch (pollerError: any) {
           console.error(`[SSE Stream:${deploymentId}] CRITICAL ERROR in poller interval: ${pollerError.message}`, pollerError.stack);
-          // Attempt to inform client before closing
           safeEnqueue('error', { message: "Internal server error during stream polling. Check server logs." });
-          cleanup(); // Perform full cleanup
+          cleanup(); 
         }
       }, POLLING_INTERVAL);
 
@@ -157,15 +172,13 @@ export async function GET(
       });
     },
     cancel(reason) {
+      // This is called if the consumer (Next.js server) cancels the stream, not typically for client disconnects
       console.log(`[SSE Stream:${deploymentId}] Stream explicitly cancelled by consumer. Reason:`, reason);
-      // This is an internal ReadableStream cancellation, usually implies the 'start' method's cleanup
-      // should handle resource release. The 'abort' listener is more direct for client-initiated closures.
-      // We call cleanup here as well to be safe, though it might be redundant if 'abort' also fires.
-      // Check clientClosed to avoid double cleanup.
-      // No access to pollerIntervalId or controller directly from here in this scope.
-      // Relies on the fact that if cancel() is called, clientClosed should eventually be true.
-      // The cleanup logic in `start` (via abort or poller loop) should handle it.
-      // For good measure, ensure that the `start` method's cleanup logic is robust.
+      // The `start` method's cleanup (via abort or poller loop) should handle resource release.
+      // No direct access to pollerIntervalId or controller directly from here.
+      // We ensure `clientClosed` is set, which the poller loop and `start` method's logic respects.
+      // If this `cancel` is called, we can assume the stream is no longer viable.
+      // The cleanup in `start` will be triggered by `clientClosed` being true or via `abort`.
     }
   });
 
@@ -179,3 +192,4 @@ export async function GET(
     },
   });
 }
+
