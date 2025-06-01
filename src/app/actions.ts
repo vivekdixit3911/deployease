@@ -63,13 +63,25 @@ async function uploadDirectoryRecursiveS3(
         Key: s3ObjectKey,
         Body: fileBuffer,
         ContentType: contentType,
-        // ACL: 'public-read', // Uncomment if objects should be public by default and your provider supports it
+        // ACL: 'public-read', // Uncomment if objects should be public by default
       });
       await currentS3Client.send(command);
       logsRef.value += `Uploaded ${localEntryPath} to s3://${OLA_S3_BUCKET_NAME}/${s3ObjectKey} successfully.\n`;
     }
   }
 }
+
+// Helper function to sanitize names for URLs/paths
+const sanitizeName = (name: string | undefined | null): string => {
+  if (!name) return '';
+  return name
+    .trim()
+    .replace(/\s+/g, '-')          // Replace spaces with hyphens
+    .replace(/[^a-zA-Z0-9-]/g, '') // Remove non-alphanumeric chars except hyphens
+    .replace(/-+/g, '-')           // Replace multiple hyphens with single
+    .replace(/^-+|-+$/g, '')       // Trim leading/trailing hyphens
+    .toLowerCase();
+};
 
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
@@ -85,8 +97,9 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
   let tempZipPath = '';
   let extractionPath = '';
-  let finalProjectName = 'untitled-project';
   let detectedFramework = 'unknown';
+  const minNameLength = 3; // Minimum acceptable length for a project name part.
+  let finalProjectName = 'untitled-project'; // Default project name
   
   const logsRef = { value: '' };
 
@@ -135,13 +148,30 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       return { success: false, message: 'The uploaded ZIP file is empty or invalid.', logs: logsRef.value };
     }
 
-    logsRef.value += `Suggesting project name...\n`;
+    // Determine Project Name
+    logsRef.value += `Determining project name...\n`;
+    let aiSuggestion = '';
     try {
-      const nameSuggestion = await suggestProjectName({ fileNames });
-      finalProjectName = nameSuggestion.projectName.replace(/[^a-zA-Z0-9-]/g, '-').toLowerCase(); // Sanitize name
-      logsRef.value += `Suggested project name: ${finalProjectName}\n`;
-    } catch (aiError) {
-      logsRef.value += `AI project name suggestion failed: ${(aiError as Error).message}. Using default name.\n`;
+      const nameSuggestionOutput = await suggestProjectName({ fileNames });
+      aiSuggestion = sanitizeName(nameSuggestionOutput.projectName);
+      logsRef.value += `AI suggested name (raw: "${nameSuggestionOutput.projectName}", sanitized: "${aiSuggestion}")\n`;
+    } catch (error) {
+      logsRef.value += `AI project name suggestion failed: ${(error as Error).message}\n`;
+    }
+
+    const uploadedFileNameWithoutExtension = file.name.replace(/\.zip$/i, '');
+    const fileBasedName = sanitizeName(uploadedFileNameWithoutExtension);
+    logsRef.value += `Uploaded file name (raw: "${file.name}", base: "${uploadedFileNameWithoutExtension}", sanitized: "${fileBasedName}")\n`;
+
+    if (aiSuggestion && aiSuggestion !== 'untitled-project' && aiSuggestion.length >= minNameLength) {
+      finalProjectName = aiSuggestion;
+      logsRef.value += `Using AI suggested name: ${finalProjectName}\n`;
+    } else if (fileBasedName && fileBasedName.length >= minNameLength) {
+      finalProjectName = fileBasedName;
+      logsRef.value += `AI name unsuitable or unavailable. Using file-based name: ${finalProjectName}\n`;
+    } else {
+      // finalProjectName remains 'untitled-project'
+      logsRef.value += `Both AI and file-based names are unsuitable. Using default name: ${finalProjectName}\n`;
     }
     
     logsRef.value += `Detecting framework...\n`;
@@ -170,7 +200,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       detectedFramework = 'static';
     }
 
-    const s3ProjectBaseKey = `sites/${finalProjectName}`; // Base S3 key for this project
+    const s3ProjectBaseKey = `sites/${finalProjectName}`; 
 
     if (detectedFramework === 'react') {
       logsRef.value += `React project detected. Starting build process in ${extractionPath}...\n`;
@@ -233,7 +263,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
   } catch (error: any) {
     let detailedErrorMessage = error.message;
-    if (error.name) { // AWS SDK errors often have a name
+    if (error.name) { 
         detailedErrorMessage = `S3 Storage Error (${error.name}): ${error.message}`;
     }
     if (error.$metadata && error.$metadata.httpStatusCode) {
@@ -261,3 +291,4 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     }
   }
 }
+
