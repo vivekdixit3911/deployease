@@ -12,7 +12,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { s3Client, OLA_S3_BUCKET_NAME } from '@/lib/s3Client';
 import { TEMP_UPLOAD_DIR } from '@/config/constants';
 import { suggestProjectName } from '@/ai/flows/suggest-project-name';
-import { detectFramework } from '@/ai/flows/detect-framework';
+import { detectFramework, DetectFrameworkInput } from '@/ai/flows/detect-framework';
 
 const execAsync = promisify(exec);
 
@@ -43,13 +43,12 @@ async function uploadDirectoryRecursiveS3(
     logsRef.value += 'Error: OLA_S3_BUCKET_NAME is not configured.\n';
     throw new Error('OLA_S3_BUCKET_NAME is not configured.');
   }
-  const currentS3Client = s3Client();
+  const currentS3Client = s3Client(); // Ensures client is initialized and config is checked
 
   const entries = await fs.readdir(localDirPath, { withFileTypes: true });
   for (const entry of entries) {
     const localEntryPath = path.join(localDirPath, entry.name);
     const cleanEntryName = entry.name.replace(/^\/+|\/+$/g, '');
-    // Ensure s3ObjectKey correctly represents the path within the s3BaseKey "folder"
     const s3ObjectKey = `${s3BaseKey}/${cleanEntryName}`.replace(/^\/+/, '').replace(/\/\//g, '/');
 
 
@@ -97,7 +96,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   }
 
   let tempZipPath = '';
-  let extractionPath = ''; // Root directory where ZIP contents are extracted
+  let extractionPath = ''; // Root directory where ZIP contents are extracted (e.g., .../uniqueId/extracted)
   let projectRootPath = ''; // Actual root of the project within extractionPath (e.g., extractionPath or extractionPath/subdir)
   let detectedFramework = 'unknown';
   const minNameLength = 3;
@@ -105,7 +104,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   
   try {
     if (!OLA_S3_BUCKET_NAME) {
-        logsRef.value += 'Error: S3 bucket name is not configured in environment variables.\n';
+        logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
         throw new Error('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
     s3Client(); // Initialize client early to catch config errors
@@ -113,23 +112,23 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     await ensureDirectoryExists(TEMP_UPLOAD_DIR);
     
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    tempZipPath = path.join(TEMP_UPLOAD_DIR, `${uniqueId}-${file.name}`);
-    extractionPath = path.join(TEMP_UPLOAD_DIR, uniqueId, 'extracted');
+    const uniqueExtractionDir = path.join(TEMP_UPLOAD_DIR, uniqueId); // Parent for zip and extracted content
+    tempZipPath = path.join(uniqueExtractionDir, file.name); // Keep zip inside unique folder for easier cleanup
+    extractionPath = path.join(uniqueExtractionDir, 'extracted'); // All extracted files go here
     await ensureDirectoryExists(extractionPath);
     logsRef.value += `Root extraction path: ${extractionPath}\n`;
 
     logsRef.value += `Processing uploaded file: ${file.name}\n`;
     const fileBuffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(tempZipPath, fileBuffer); // Save zip temporarily for record/debug if needed
+    await fs.writeFile(tempZipPath, fileBuffer);
     logsRef.value += `Temporary ZIP file saved to: ${tempZipPath}\n`;
 
     const zip = await JSZip.loadAsync(fileBuffer);
-    const fileNamesInZip: string[] = []; // All relative file paths from the zip
-    let projectPackageJsonRelativePath: string | null = null; // Relative path to the chosen package.json within zip
+    const fileNamesInZip: string[] = [];
+    let projectPackageJsonRelativePath: string | null = null;
     let projectPackageJsonContent: string | null = null;
     const allPackageJsonPathsInZip: string[] = [];
 
-    // First pass: identify all files and potential package.json files
     for (const relativePathInZip in zip.files) {
         fileNamesInZip.push(relativePathInZip);
         if (!zip.files[relativePathInZip].dir && path.basename(relativePathInZip).toLowerCase() === 'package.json') {
@@ -139,7 +138,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     logsRef.value += `Found ${allPackageJsonPathsInZip.length} package.json file(s) in ZIP at: ${allPackageJsonPathsInZip.join(', ') || 'None'}\n`;
 
     if (allPackageJsonPathsInZip.length > 0) {
-      allPackageJsonPathsInZip.sort((a, b) => a.split('/').length - b.split('/').length); // Prefer shallowest
+      allPackageJsonPathsInZip.sort((a, b) => a.split('/').length - b.split('/').length);
       projectPackageJsonRelativePath = allPackageJsonPathsInZip[0];
       logsRef.value += `Selected package.json for analysis: ${projectPackageJsonRelativePath}\n`;
       try {
@@ -147,18 +146,15 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         projectPackageJsonContent = content.toString('utf-8');
       } catch (e) {
         logsRef.value += `Error reading content of selected package.json (${projectPackageJsonRelativePath}): ${(e as Error).message}\n`;
-        projectPackageJsonContent = null; // Ensure it's null if read fails
+        projectPackageJsonContent = null;
       }
     }
 
-    // Determine projectRootPath (actual root for npm commands or static uploads)
-    // Default to the root of extracted files
     projectRootPath = extractionPath; 
     if (projectPackageJsonRelativePath) {
-      // If a package.json was identified, the project root is its directory
       projectRootPath = path.join(extractionPath, path.dirname(projectPackageJsonRelativePath));
     }
-    logsRef.value += `Initial project root path (before potential index.html adjustment): ${projectRootPath}\n`;
+    logsRef.value += `Initial project root path (based on package.json or extraction root): ${projectRootPath}\n`;
     
     logsRef.value += `Extracting all ZIP files to ${extractionPath}...\n`;
     for (const relativePathInZip in zip.files) {
@@ -172,7 +168,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         await fs.writeFile(localDestPath, content);
       }
     }
-    logsRef.value += `ZIP extraction to ${extractionPath} complete. All files from ZIP: ${fileNamesInZip.join(', ') || 'None'}\n`;
+    logsRef.value += `ZIP extraction to ${extractionPath} complete.\nAll files from ZIP (first 10): ${fileNamesInZip.slice(0,10).join(', ') || 'None'}${fileNamesInZip.length > 10 ? '...' : ''}\n`;
     
     if (fileNamesInZip.length === 0) {
       return { success: false, message: 'The uploaded ZIP file is empty or invalid.', logs: logsRef.value };
@@ -199,70 +195,64 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
       finalProjectName = fileBasedName;
       logsRef.value += `AI name unsuitable or unavailable. Using file-based name: ${finalProjectName}\n`;
     } else {
-      finalProjectName = 'untitled-project'; // Fallback already set
-      logsRef.value += `Both AI and file-based names are unsuitable. Using default name: ${finalProjectName}\n`;
+      // finalProjectName is already 'untitled-project' by default
+      logsRef.value += `Both AI and file-based names are unsuitable or too short. Using default name: ${finalProjectName}\n`;
     }
     
     logsRef.value += `Detecting framework...\n`;
-    let frameworkInputContent = 'No package.json or index.html found for analysis.';
-    let analysisBasis = '';
+    let frameworkInput: DetectFrameworkInput = { fileContents: 'No package.json or index.html found for analysis.', fileNameAnalyzed: 'unknown' };
 
     if (projectPackageJsonContent) {
-        frameworkInputContent = projectPackageJsonContent;
-        analysisBasis = `content of ${projectPackageJsonRelativePath}`;
+        frameworkInput = { fileContents: projectPackageJsonContent, fileNameAnalyzed: projectPackageJsonRelativePath! };
+        logsRef.value += `Framework detection input: content of '${projectPackageJsonRelativePath}'.\n`;
     } else {
-        // No package.json found or chosen, try to find an index.html for analysis.
-        // Search for index.html starting from the shallowest depth within the extracted files.
-        const findIndexHtmlRecursive = async (currentDir: string, rootExtractionDir: string): Promise<string | null> => {
+        const findIndexHtmlRecursive = async (currentDir: string): Promise<string | null> => {
             const entries = await fs.readdir(currentDir, { withFileTypes: true });
-            entries.sort((a, b) => (a.isDirectory() ? 1 : -1) - (b.isDirectory() ? 1 : -1)); // Process files before directories
+            entries.sort((a, b) => (a.isDirectory() ? 1 : -1) - (b.isDirectory() ? 1 : -1)); 
 
             for (const entry of entries) {
                 const entryPath = path.join(currentDir, entry.name);
                 if (entry.isFile() && entry.name.toLowerCase() === 'index.html') {
-                    return entryPath; // Found it
+                    return entryPath;
                 }
             }
-            // If not found in current dir files, check subdirectories
             for (const entry of entries) {
                  if (entry.isDirectory()) {
-                    const foundInSubDir = await findIndexHtmlRecursive(path.join(currentDir, entry.name), rootExtractionDir);
+                    const foundInSubDir = await findIndexHtmlRecursive(path.join(currentDir, entry.name));
                     if (foundInSubDir) return foundInSubDir;
                 }
             }
             return null;
         };
         
-        const foundIndexHtmlFullPath = await findIndexHtmlRecursive(extractionPath, extractionPath);
+        const foundIndexHtmlFullPath = await findIndexHtmlRecursive(extractionPath);
 
         if (foundIndexHtmlFullPath) {
             try {
-                frameworkInputContent = await fs.readFile(foundIndexHtmlFullPath, 'utf-8');
+                const indexHtmlContent = await fs.readFile(foundIndexHtmlFullPath, 'utf-8');
                 const relativeIndexPath = path.relative(extractionPath, foundIndexHtmlFullPath);
-                analysisBasis = `content of ${relativeIndexPath}`;
-                 // If we are using index.html because no package.json, the projectRootPath for static upload
-                 // should be the directory containing this index.html.
-                projectRootPath = path.dirname(foundIndexHtmlFullPath);
+                frameworkInput = { fileContents: indexHtmlContent, fileNameAnalyzed: relativeIndexPath };
+                logsRef.value += `Framework detection input: content of '${relativeIndexPath}'.\n`;
+                projectRootPath = path.dirname(foundIndexHtmlFullPath); // Adjust project root for static site if index.html is used
                 logsRef.value += `Adjusted project root for static site based on index.html (${relativeIndexPath}) to: ${projectRootPath}\n`;
             } catch (readError) {
                 logsRef.value += `Could not read found index.html at ${foundIndexHtmlFullPath}: ${(readError as Error).message}\n`;
-                analysisBasis = 'Error reading identified index.html';
+                 frameworkInput = { fileContents: `Error reading index.html: ${(readError as Error).message}`, fileNameAnalyzed: 'index.html_read_error' };
             }
         } else {
             logsRef.value += `No suitable package.json or index.html found for framework detection.\n`;
-            analysisBasis = 'No primary files for analysis';
+            frameworkInput = { fileContents: `No primary analysis files (package.json, index.html) found in ZIP. Analyzed files: ${fileNamesInZip.join(', ')}`, fileNameAnalyzed: 'none_found' };
         }
     }
     
-    logsRef.value += `Framework detection basis: ${analysisBasis}.\n`;
-    logsRef.value += `Content sent for framework detection (first 500 chars):\n---\n${frameworkInputContent.substring(0, 500)}${frameworkInputContent.length > 500 ? '...' : ''}\n---\n`;
+    logsRef.value += `Content for framework detection (first 500 chars of ${frameworkInput.fileNameAnalyzed}):\n---\n${frameworkInput.fileContents.substring(0, 500)}${frameworkInput.fileContents.length > 500 ? '...' : ''}\n---\n`;
 
     try {
-      const frameworkDetection = await detectFramework({ fileContents: frameworkInputContent });
+      const frameworkDetection = await detectFramework(frameworkInput);
       detectedFramework = frameworkDetection.framework;
       logsRef.value += `AI Detected framework: ${detectedFramework} (Confidence: ${frameworkDetection.confidence})\n`;
     } catch (aiError: any) {
-      logsRef.value += `AI framework detection failed: ${(aiError as Error).message}. Assuming 'static' due to error.\n`;
+      logsRef.value += `AI framework detection failed: ${(aiError as Error).message}. Stack: ${aiError.stack}. Assuming 'static' due to error.\n`;
       detectedFramework = 'static';
     }
 
@@ -273,50 +263,49 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     if (detectedFramework === 'react') {
       logsRef.value += `React project detected. Starting build process in ${projectRootPath}...\n`;
       try {
-        // Ensure package-lock.json or yarn.lock are not causing issues if they are from a different environment
-        // Consider removing them before install: await fs.rm(path.join(projectRootPath, 'package-lock.json'), { force: true }).catch(() => {});
         logsRef.value += `Running 'npm install' in ${projectRootPath}...\n`;
         const installOutput = await execAsync('npm install', { cwd: projectRootPath });
-        logsRef.value += `npm install stdout: ${installOutput.stdout || 'N/A'}\n`;
-        if (installOutput.stderr) logsRef.value += `npm install stderr: ${installOutput.stderr}\n`;
+        logsRef.value += `npm install stdout:\n${installOutput.stdout || 'N/A'}\n`;
+        if (installOutput.stderr) logsRef.value += `npm install stderr:\n${installOutput.stderr}\n`;
 
         logsRef.value += `Running 'npm run build' in ${projectRootPath}...\n`;
         const buildOutput = await execAsync('npm run build', { cwd: projectRootPath });
-        logsRef.value += `npm run build stdout: ${buildOutput.stdout || 'N/A'}\n`;
-        if (buildOutput.stderr) logsRef.value += `npm run build stderr: ${buildOutput.stderr}\n`;
+        logsRef.value += `npm run build stdout:\n${buildOutput.stdout || 'N/A'}\n`;
+        if (buildOutput.stderr) logsRef.value += `npm run build stderr:\n${buildOutput.stderr}\n`;
 
         const buildDirs = ['build', 'dist', 'out'];
         let buildSourcePath = ''; 
         for (const dir of buildDirs) {
           const potentialPath = path.join(projectRootPath, dir);
           try {
-            await fs.access(potentialPath);
-             if ((await fs.stat(potentialPath)).isDirectory()) {
+            await fs.access(potentialPath); // Check if path exists
+             if ((await fs.stat(potentialPath)).isDirectory()) { // Check if it's a directory
                 buildSourcePath = potentialPath;
                 logsRef.value += `Found build output directory at: ${buildSourcePath}\n`;
                 break;
             }
-          } catch { /* Directory does not exist */ }
+          } catch { /* Directory does not exist or not accessible */ }
         }
 
         if (!buildSourcePath) {
           logsRef.value += `Error: Build output directory (build/, dist/, or out/) not found in ${projectRootPath} after 'npm run build'. Listing directory contents of ${projectRootPath}:\n`;
           try {
-            const rootContents = await fs.readdir(projectRootPath);
-            logsRef.value += rootContents.join(', ') + '\n';
-          } catch(e) { logsRef.value += `Could not list contents of ${projectRootPath}: ${(e as Error).stack}\n`; }
-          throw new Error('Build output directory not found.');
+            const rootContents = await fs.readdir(projectRootPath, {withFileTypes: true});
+            logsRef.value += rootContents.map(entry => `${entry.name}${entry.isDirectory() ? '/' : ''}`).join(', ') + '\n';
+          } catch(e) { logsRef.value += `Could not list contents of ${projectRootPath}: ${(e as Error).message}\nStack: ${(e as Error).stack}\n`; }
+          throw new Error('Build output directory not found. Check build scripts and output configuration.');
         }
         
-        logsRef.value += `Uploading build files from ${buildSourcePath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
+        logsRef.value += `Uploading React build files from ${buildSourcePath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
         await uploadDirectoryRecursiveS3(buildSourcePath, s3ProjectBaseKey, logsRef);
-        logsRef.value += `Build files uploaded successfully to S3.\n`;
+        logsRef.value += `React build files uploaded successfully to S3.\n`;
 
       } catch (buildError: any) {
-        logsRef.value += `Build process failed: ${buildError.message}\n`;
-        if (buildError.stdout) logsRef.value += `stdout: ${buildError.stdout}\n`;
-        if (buildError.stderr) logsRef.value += `stderr: ${buildError.stderr}\n`;
-        return { success: false, message: `Build process failed: ${buildError.message}`, logs: logsRef.value, projectName: finalProjectName, framework: detectedFramework };
+        logsRef.value += `React build process failed: ${buildError.message}\n`;
+        if (buildError.stdout) logsRef.value += `Build stdout:\n${buildError.stdout}\n`;
+        if (buildError.stderr) logsRef.value += `Build stderr:\n${buildError.stderr}\n`;
+        if (buildError.stack) logsRef.value += `Build stack:\n${buildError.stack}\n`;
+        return { success: false, message: `React build process failed: ${buildError.message}`, logs: logsRef.value, projectName: finalProjectName, framework: detectedFramework };
       }
     } else { // Static site
       logsRef.value += `Static site detected. Uploading files from ${projectRootPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
@@ -342,7 +331,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         detailedErrorMessage = `${error.name}: ${error.message}`;
     }
     if (error.$metadata && error.$metadata.httpStatusCode) {
-        detailedErrorMessage += ` (HTTP Status: ${error.$metadata.httpStatusCode})`;
+        detailedErrorMessage += ` (S3 HTTP Status: ${error.$metadata.httpStatusCode})`;
     }
     
     logsRef.value += `An error occurred: ${detailedErrorMessage}\nStack: ${error.stack || 'N/A'}\n`;
@@ -356,18 +345,29 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         framework: detectedFramework
     };
   } finally {
-    if (tempZipPath) {
-      fs.unlink(tempZipPath).catch(err => console.error(`Failed to delete temp zip: ${tempZipPath}`, err));
-    }
-    if (extractionPath && extractionPath.startsWith(TEMP_UPLOAD_DIR)) {
-        const dirToDelete = path.dirname(extractionPath); 
-         if (dirToDelete && dirToDelete !== TEMP_UPLOAD_DIR && dirToDelete.startsWith(TEMP_UPLOAD_DIR)) {
-             fs.rm(dirToDelete, { recursive: true, force: true })
-                .catch(err => console.error(`Failed to delete temp extraction base folder: ${dirToDelete}`, err));
-        } else if (extractionPath !== TEMP_UPLOAD_DIR) { 
-             fs.rm(extractionPath, { recursive: true, force: true })
-                .catch(err => console.error(`Failed to delete temp extraction folder: ${extractionPath}`, err));
-        }
+    // Cleanup the unique extraction directory which contains the temp zip and extracted files
+    if (extractionPath) { // If extractionPath was set, uniqueExtractionDir was also set
+      const uniqueExtractionDirToDelete = path.dirname(extractionPath); // This should be TEMP_UPLOAD_DIR/uniqueId
+      if (uniqueExtractionDirToDelete && uniqueExtractionDirToDelete.startsWith(TEMP_UPLOAD_DIR) && uniqueExtractionDirToDelete !== TEMP_UPLOAD_DIR) {
+        logsRef.value += `Attempting to delete temporary directory: ${uniqueExtractionDirToDelete}\n`;
+        fs.rm(uniqueExtractionDirToDelete, { recursive: true, force: true })
+          .then(() => logsRef.value += `Successfully deleted temporary directory: ${uniqueExtractionDirToDelete}\n`)
+          .catch(err => {
+            logsRef.value += `Failed to delete temp extraction base folder: ${uniqueExtractionDirToDelete}. Error: ${err.message}\n`;
+            console.error(`Failed to delete temp extraction base folder: ${uniqueExtractionDirToDelete}`, err);
+          });
+      } else {
+          logsRef.value += `Skipping deletion of non-specific temporary directory: ${uniqueExtractionDirToDelete}\n`;
+      }
+    } else if (tempZipPath) { // Fallback if only tempZipPath was created (e.g., error before extraction)
+        logsRef.value += `Attempting to delete temporary zip file: ${tempZipPath}\n`;
+        fs.unlink(tempZipPath)
+          .then(() => logsRef.value += `Successfully deleted temporary zip file: ${tempZipPath}\n`)
+          .catch(err => {
+            logsRef.value += `Failed to delete temp zip: ${tempZipPath}. Error: ${err.message}\n`;
+            console.error(`Failed to delete temp zip: ${tempZipPath}`, err);
+          });
     }
   }
 }
+
