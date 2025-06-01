@@ -38,15 +38,15 @@ export default function HomePage() {
 
   if (loading || (!loading && currentUser)) { 
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-black p-4 text-white">
+      <div className="min-h-screen flex flex-col items-center justify-center sparkling-gradient-background p-4">
         <Loader2 className="h-16 w-16 animate-spin mb-6 text-primary-foreground" />
-        <p className="text-xl">Loading session...</p>
+        <p className="text-xl text-primary-foreground">Loading session...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-black p-6 text-center relative overflow-hidden">
+    <div className="min-h-screen w-full flex flex-col items-center justify-center sparkling-gradient-background p-6 text-center relative">
       
       <div className="relative z-10 flex flex-col items-center">
         <h1 className="text-7xl sm:text-8xl md:text-9xl font-bold text-primary-foreground tracking-tight mb-12 animate-fadeIn">
@@ -56,8 +56,8 @@ export default function HomePage() {
         <div className="space-y-6 w-full max-w-xs">
           <Button
             onClick={() => handleSignIn(googleProvider)}
-            variant="outline" // Kept for base styling, overridden by className
-            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:bg-gray-100 hover:text-black transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline" 
+            className="w-full text-lg py-6 bg-white text-black border border-gray-600 hover:bg-gray-100 transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with Google"
           >
             <Chrome className="h-6 w-6 mr-3" />
@@ -65,8 +65,8 @@ export default function HomePage() {
           </Button>
           <Button
             onClick={() => handleSignIn(githubProvider)}
-            variant="outline" // Kept for base styling, overridden by className
-            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:bg-gray-100 hover:text-black transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline" 
+            className="w-full text-lg py-6 bg-white text-black border border-gray-600 hover:bg-gray-100 transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with GitHub"
           >
             <GithubIcon className="h-6 w-6 mr-3" /> 
