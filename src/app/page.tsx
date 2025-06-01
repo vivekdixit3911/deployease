@@ -7,7 +7,7 @@ import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider, githubProvider } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
-import { Chrome, GithubIcon, Loader2 } from 'lucide-react'; // Standardized to GithubIcon
+import { Chrome, GithubIcon, Loader2 } from 'lucide-react'; 
 import { useToast } from '@/hooks/use-toast';
 
 export default function HomePage() {
@@ -17,7 +17,7 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!loading && currentUser) {
-      router.push('/dashboard'); // Redirect if already logged in
+      router.push('/dashboard'); 
     }
   }, [currentUser, loading, router]);
 
@@ -36,7 +36,7 @@ export default function HomePage() {
     }
   };
 
-  if (loading || (!loading && currentUser)) { // Show loader if auth is loading or if user is logged in (and about to be redirected)
+  if (loading || (!loading && currentUser)) { 
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-black p-4 text-white">
         <Loader2 className="h-16 w-16 animate-spin mb-6 text-primary-foreground" />
@@ -47,8 +47,6 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-black p-6 text-center relative overflow-hidden">
-      {/* Placeholder for potential future animated stars background */}
-      {/* <div className="absolute inset-0 z-0"> Add star animation here </div> */}
       
       <div className="relative z-10 flex flex-col items-center">
         <h1 className="text-7xl sm:text-8xl md:text-9xl font-bold text-primary-foreground tracking-tight mb-12 animate-fadeIn">
@@ -58,8 +56,8 @@ export default function HomePage() {
         <div className="space-y-6 w-full max-w-xs">
           <Button
             onClick={() => handleSignIn(googleProvider)}
-            variant="outline"
-            className="w-full text-lg py-6 bg-transparent hover:bg-primary-foreground/10 border-primary-foreground/50 text-primary-foreground hover:text-primary-foreground transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline" // Kept for base styling, overridden by className
+            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:bg-gray-100 hover:text-black transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with Google"
           >
             <Chrome className="h-6 w-6 mr-3" />
@@ -67,11 +65,11 @@ export default function HomePage() {
           </Button>
           <Button
             onClick={() => handleSignIn(githubProvider)}
-            variant="outline"
-            className="w-full text-lg py-6 bg-transparent hover:bg-primary-foreground/10 border-primary-foreground/50 text-primary-foreground hover:text-primary-foreground transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline" // Kept for base styling, overridden by className
+            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:bg-gray-100 hover:text-black transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with GitHub"
           >
-            <GithubIcon className="h-6 w-6 mr-3" /> {/* Standardized to GithubIcon */}
+            <GithubIcon className="h-6 w-6 mr-3" /> 
             Sign in with GitHub
           </Button>
         </div>

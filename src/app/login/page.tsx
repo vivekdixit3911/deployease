@@ -17,7 +17,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!loading && currentUser) {
-      router.push('/dashboard'); // Redirect if already logged in
+      router.push('/dashboard'); 
     }
   }, [currentUser, loading, router]);
 
@@ -55,8 +55,8 @@ export default function LoginPage() {
         <div className="space-y-6 w-full max-w-xs">
           <Button
             onClick={() => handleSignIn(googleProvider)}
-            variant="outline"
-            className="w-full text-lg py-6 bg-transparent hover:bg-primary-foreground/10 border-primary-foreground/50 text-primary-foreground hover:text-primary-foreground transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline" // Kept for base styling, overridden by className
+            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:bg-gray-100 hover:text-black transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with Google"
           >
             <Chrome className="h-6 w-6 mr-3" />
@@ -64,8 +64,8 @@ export default function LoginPage() {
           </Button>
           <Button
             onClick={() => handleSignIn(githubProvider)}
-            variant="outline"
-            className="w-full text-lg py-6 bg-transparent hover:bg-primary-foreground/10 border-primary-foreground/50 text-primary-foreground hover:text-primary-foreground transition-all duration-300 ease-in-out transform hover:scale-105"
+            variant="outline" // Kept for base styling, overridden by className
+            className="w-full text-lg py-6 bg-white text-primary-foreground border border-gray-600 hover:bg-gray-100 hover:text-black transition-all duration-300 ease-in-out transform hover:scale-105"
             aria-label="Sign in with GitHub"
           >
             <GithubIcon className="h-6 w-6 mr-3" />
