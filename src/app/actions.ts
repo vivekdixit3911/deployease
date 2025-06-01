@@ -30,12 +30,12 @@ interface DeploymentResult {
 }
 
 async function ensureDirectoryExists(dirPath: string) {
-  console.log(`ensureDirectoryExists: Attempting to create directory ${dirPath}`);
+  console.log(`[deployProject] ensureDirectoryExists: Attempting to create directory ${dirPath}`);
   try {
     await fs.mkdir(dirPath, { recursive: true });
-    console.log(`ensureDirectoryExists: Successfully ensured directory exists: ${dirPath}`);
+    console.log(`[deployProject] ensureDirectoryExists: Successfully ensured directory exists: ${dirPath}`);
   } catch (error: any) {
-    console.error(`ensureDirectoryExists: Failed to create directory ${dirPath}:`, error.message, error.stack);
+    console.error(`[deployProject] ensureDirectoryExists: Failed to create directory ${dirPath}:`, error.message, error.stack);
     throw new Error(`Failed to create required directory ${dirPath}: ${error.message}`);
   }
 }
@@ -50,7 +50,7 @@ async function uploadDirectoryRecursiveS3(
     logsRef.value += 'Error: OLA_S3_BUCKET_NAME is not configured for S3 upload.\n';
     throw new Error('OLA_S3_BUCKET_NAME is not configured for S3 upload.');
   }
-  const currentS3Client = s3Client(); // Can throw MissingS3ConfigError if config is bad
+  const currentS3Client = s3Client();
 
   const entries = await fs.readdir(localDirPath, { withFileTypes: true });
   for (const entry of entries) {
@@ -84,6 +84,10 @@ const sanitizeName = (name: string | undefined | null): string => {
   return name
     .trim()
     .replace(/\.zip$/i, '')
+    .replace(/\.git$/i, '') // Remove .git suffix for project names from URLs
+    .replace(/\/$/, '') // Remove trailing slash
+    .split('/') // Get last part of path for URLs like github.com/user/repo
+    .pop() || 'untitled-project' // Fallback if pop returns undefined
     .replace(/\s+/g, '-')
     .replace(/[^a-zA-Z0-9-]/g, '')
     .replace(/-+/g, '-')
@@ -119,7 +123,7 @@ function nonAIDetectFramework(packageJsonContent: string | null, fileNameAnalyze
         logsRef.value += "Detected Astro.\n";
         return { framework: 'astro', build_command: scripts.build || 'astro build', output_directory: 'dist', reasoning: "Astro dependency found." };
       }
-      if (dependencies.vite && (dependencies['@vitejs/plugin-react'] || dependencies['@vitejs/plugin-react-swc'])) {
+       if (dependencies.vite && (dependencies['@vitejs/plugin-react'] || dependencies['@vitejs/plugin-react-swc'])) {
         logsRef.value += "Detected Vite with React.\n";
         return { framework: 'vite-react', build_command: scripts.build || 'vite build', output_directory: 'dist', reasoning: "Vite with React plugin detected." };
       }
@@ -154,88 +158,124 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
   console.log('[deployProject] Action initiated.');
   let logsRef = { value: 'Deployment Logs:\n----------------\n' };
   let tempZipPath = '';
-  let extractionPath = '';
-  let projectRootPath = '';
+  let baseExtractionDir = ''; // Base directory for either ZIP extraction or Git clone
+  let projectRootPath = ''; // Actual root of the project files within baseExtractionDir
   let finalProjectName = 'untitled-project';
-  let uniqueExtractionDir: string | null = null;
+  let uniqueTempIdDir: string | null = null; // This will be the top-level temp dir to delete
 
   try {
     console.log('[deployProject] Entered main try block.');
     logsRef.value += '[deployProject] Entered main try block.\n';
-
-    const file = formData.get('zipfile') as File | null;
-
-    if (!file) {
-      logsRef.value += 'Error: No file uploaded by the user.\n';
-      console.log('[deployProject] No file uploaded, returning error.');
-      return { success: false, message: 'No file uploaded.', logs: logsRef.value, projectName: finalProjectName };
-    }
-    logsRef.value += `Received file: ${file.name}, type: ${file.type}, size: ${file.size} bytes.\n`;
-
-    if (file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
-      logsRef.value += `Error: Invalid file type received: ${file.type}. Please upload a ZIP file.\n`;
-      console.log('[deployProject] Invalid file type, returning error.');
-      return { success: false, message: 'Invalid file type. Please upload a ZIP file.', logs: logsRef.value, projectName: finalProjectName };
-    }
 
     // S3 client initialization and configuration checks
     if (!OLA_S3_BUCKET_NAME) {
         logsRef.value += 'Error: S3 bucket name (OLA_S3_BUCKET_NAME) is not configured in environment variables.\n';
         throw new Error('S3 bucket name (OLA_S3_BUCKET_NAME) is not configured.');
     }
-    s3Client(); // Initialize client early to catch config errors. Throws on critical config error.
+    s3Client(); 
     logsRef.value += 'S3 client initialized and configuration seems present.\n';
 
     await ensureDirectoryExists(TEMP_UPLOAD_DIR);
     logsRef.value += `Base temporary upload directory ensured: ${TEMP_UPLOAD_DIR}\n`;
 
     const uniqueId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    uniqueExtractionDir = path.join(TEMP_UPLOAD_DIR, uniqueId);
-    tempZipPath = path.join(uniqueExtractionDir, file.name);
-    extractionPath = path.join(uniqueExtractionDir, 'extracted');
-    
-    await ensureDirectoryExists(uniqueExtractionDir);
-    await ensureDirectoryExists(extractionPath);
-    logsRef.value += `Root extraction path for this deployment: ${extractionPath}\n`;
+    uniqueTempIdDir = path.join(TEMP_UPLOAD_DIR, uniqueId); // This is the directory to cleanup
+    await ensureDirectoryExists(uniqueTempIdDir);
+    logsRef.value += `Unique temporary directory for this deployment: ${uniqueTempIdDir}\n`;
 
-    logsRef.value += `Processing uploaded file: ${file.name}\n`;
-    const fileBuffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(tempZipPath, fileBuffer);
-    logsRef.value += `Temporary ZIP file saved to: ${tempZipPath}\n`;
+    const githubUrl = formData.get('githubUrl') as string | null;
+    const file = formData.get('zipfile') as File | null;
 
-    const zip = await JSZip.loadAsync(fileBuffer);
-    const fileNamesInZip: string[] = [];
+    if (!file && !githubUrl) {
+      logsRef.value += 'Error: No file uploaded and no GitHub URL provided.\n';
+      console.log('[deployProject] No input provided, returning error.');
+      return { success: false, message: 'No file uploaded or GitHub URL provided.', logs: logsRef.value, projectName: finalProjectName };
+    }
 
-    logsRef.value += `Extracting all ZIP files to ${extractionPath}...\n`;
-    for (const relativePathInZip in zip.files) {
-      fileNamesInZip.push(relativePathInZip);
-      const zipEntry = zip.files[relativePathInZip];
-      const localDestPath = path.join(extractionPath, relativePathInZip);
-      if (zipEntry.dir) {
-        await ensureDirectoryExists(localDestPath);
-      } else {
-        const content = await zipEntry.async('nodebuffer');
-        await ensureDirectoryExists(path.dirname(localDestPath));
-        await fs.writeFile(localDestPath, content);
+    let sourceNameForProject = 'untitled-project';
+
+    if (githubUrl) {
+      logsRef.value += `Processing GitHub URL: ${githubUrl}\n`;
+      if (!githubUrl.match(/^(https?:\/\/)?(www\.)?github\.com\/[\w-]+\/[\w.-]+(\.git)?$/i)) {
+        logsRef.value += `Error: Invalid GitHub URL format: ${githubUrl}.\n`;
+        return { success: false, message: 'Invalid GitHub URL format.', logs: logsRef.value, projectName: finalProjectName };
       }
-    }
-    logsRef.value += `ZIP extraction to ${extractionPath} complete. All files from ZIP (first 10): ${fileNamesInZip.slice(0,10).join(', ') || 'None'}${fileNamesInZip.length > 10 ? '...' : ''}\n`;
+      
+      baseExtractionDir = path.join(uniqueTempIdDir, 'cloned_repo');
+      await ensureDirectoryExists(baseExtractionDir);
+      logsRef.value += `Attempting to clone repository from ${githubUrl} into ${baseExtractionDir}...\n`;
+      try {
+        // Using --depth 1 for shallow clone to save time and space
+        const cloneOutput = await execAsync(`git clone --depth 1 ${githubUrl} .`, { cwd: baseExtractionDir });
+        logsRef.value += `Git clone stdout:\n${cloneOutput.stdout || 'N/A'}\n`;
+        if (cloneOutput.stderr) logsRef.value += `Git clone stderr:\n${cloneOutput.stderr}\n`;
+        logsRef.value += `Repository cloned successfully into ${baseExtractionDir}.\n`;
+        projectRootPath = baseExtractionDir; // For git clone, the repo is the root
+        sourceNameForProject = githubUrl;
+      } catch (cloneError: any) {
+        logsRef.value += `Error cloning repository: ${cloneError.message}\n`;
+        if (cloneError.stdout) logsRef.value += `Git clone stdout (on error):\n${cloneError.stdout}\n`;
+        if (cloneError.stderr) logsRef.value += `Git clone stderr (on error):\n${cloneError.stderr}\n`;
+        throw new Error(`Failed to clone repository: ${cloneError.message}`);
+      }
+    } else if (file) {
+      logsRef.value += `Received file: ${file.name}, type: ${file.type}, size: ${file.size} bytes.\n`;
+      if (file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
+        logsRef.value += `Error: Invalid file type received: ${file.type}. Please upload a ZIP file.\n`;
+        console.log('[deployProject] Invalid file type, returning error.');
+        return { success: false, message: 'Invalid file type. Please upload a ZIP file.', logs: logsRef.value, projectName: finalProjectName };
+      }
+      
+      tempZipPath = path.join(uniqueTempIdDir, file.name);
+      baseExtractionDir = path.join(uniqueTempIdDir, 'extracted_zip');
+      await ensureDirectoryExists(baseExtractionDir);
+      logsRef.value += `Root extraction path for ZIP: ${baseExtractionDir}\n`;
 
-    if (fileNamesInZip.length === 0) {
-      logsRef.value += 'The uploaded ZIP file is empty or invalid.\n';
-      throw new Error('The uploaded ZIP file is empty or invalid.');
+      logsRef.value += `Processing uploaded file: ${file.name}\n`;
+      const fileBuffer = Buffer.from(await file.arrayBuffer());
+      await fs.writeFile(tempZipPath, fileBuffer);
+      logsRef.value += `Temporary ZIP file saved to: ${tempZipPath}\n`;
+
+      const zip = await JSZip.loadAsync(fileBuffer);
+      const fileNamesInZip: string[] = [];
+
+      logsRef.value += `Extracting all ZIP files to ${baseExtractionDir}...\n`;
+      for (const relativePathInZip in zip.files) {
+        fileNamesInZip.push(relativePathInZip);
+        const zipEntry = zip.files[relativePathInZip];
+        const localDestPath = path.join(baseExtractionDir, relativePathInZip);
+        if (zipEntry.dir) {
+          await ensureDirectoryExists(localDestPath);
+        } else {
+          const content = await zipEntry.async('nodebuffer');
+          await ensureDirectoryExists(path.dirname(localDestPath));
+          await fs.writeFile(localDestPath, content);
+        }
+      }
+      logsRef.value += `ZIP extraction to ${baseExtractionDir} complete. All files from ZIP (first 10): ${fileNamesInZip.slice(0,10).join(', ') || 'None'}${fileNamesInZip.length > 10 ? '...' : ''}\n`;
+
+      if (fileNamesInZip.length === 0) {
+        logsRef.value += 'The uploaded ZIP file is empty or invalid.\n';
+        throw new Error('The uploaded ZIP file is empty or invalid.');
+      }
+      // For ZIPs, projectRootPath will be determined later based on package.json location
+      sourceNameForProject = file.name;
+    } else {
+      // This case should be caught earlier, but as a safeguard:
+      throw new Error("No deployment source (ZIP or Git URL) provided.");
     }
 
-    logsRef.value += `Determining project name from filename...\n`;
-    const fileBasedName = sanitizeName(file.name);
-    logsRef.value += `Uploaded file name (raw: "${file.name}", sanitized: "${fileBasedName}")\n`;
+
+    logsRef.value += `Determining project name from source: ${sourceNameForProject}\n`;
+    const fileBasedName = sanitizeName(sourceNameForProject);
+    logsRef.value += `Sanitized name: "${fileBasedName}")\n`;
     const minNameLength = 3;
     if (fileBasedName && fileBasedName.length >= minNameLength) {
       finalProjectName = fileBasedName;
-      logsRef.value += `Using file-based name: ${finalProjectName}\n`;
+      logsRef.value += `Using derived name: ${finalProjectName}\n`;
     } else {
       finalProjectName = 'web-deployment-' + uniqueId.substring(0,5) ;
-      logsRef.value += `File-based name unsuitable or too short. Using default name: ${finalProjectName}\n`;
+      logsRef.value += `Derived name unsuitable. Using default name: ${finalProjectName}\n`;
     }
 
     logsRef.value += `Detecting framework (non-AI)...\n`;
@@ -243,7 +283,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     let analysisFileContent: string | null = null;
     let frameworkDetectionResult: FrameworkDetectionResult;
 
-    const findAnalysisFile = async (currentSearchPath: string, baseExtractionPath: string): Promise<{filePath: string | null, content: string | null, relativePath: string | null}> => {
+    // projectRootPath for ZIPs is determined here, for Git it's baseExtractionDir
+    const findAnalysisFile = async (currentSearchPath: string, searchBaseDir: string): Promise<{filePath: string | null, content: string | null, relativePath: string | null, projectRoot: string}> => {
       const packageJsonPaths: string[] = [];
       const indexHtmlPaths: string[] = [];
 
@@ -251,21 +292,21 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         const entries = await fs.readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           const fullPath = path.join(dir, entry.name);
-          const relativeToExtraction = path.relative(baseExtractionPath, fullPath);
+          const relativeToSearchBase = path.relative(searchBaseDir, fullPath);
           if (entry.isDirectory()) {
             if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
             await findFilesRecursive(fullPath);
           } else if (entry.name.toLowerCase() === 'package.json') {
-            packageJsonPaths.push(relativeToExtraction);
+            packageJsonPaths.push(relativeToSearchBase);
           } else if (entry.name.toLowerCase() === 'index.html') {
-            if (!relativeToExtraction.includes('/build/') &&
-                !relativeToExtraction.includes('/dist/') &&
-                !relativeToExtraction.includes('/.next/') &&
-                !relativeToExtraction.includes('/.output/') &&
-                !relativeToExtraction.includes('/.svelte-kit/') &&
-                !relativeToExtraction.includes('/out/') &&
-                !relativeToExtraction.includes('/node_modules/')) {
-                indexHtmlPaths.push(relativeToExtraction);
+             if (!relativeToSearchBase.includes('/build/') &&
+                !relativeToSearchBase.includes('/dist/') &&
+                !relativeToSearchBase.includes('/.next/') &&
+                !relativeToSearchBase.includes('/.output/') &&
+                !relativeToSearchBase.includes('/.svelte-kit/') &&
+                !relativeToSearchBase.includes('/out/') &&
+                !relativeToSearchBase.includes('/node_modules/')) {
+                indexHtmlPaths.push(relativeToSearchBase);
             }
           }
         }
@@ -277,27 +318,29 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
       if (packageJsonPaths.length > 0) {
         const chosenFile = packageJsonPaths[0];
-        projectRootPath = path.join(baseExtractionPath, path.dirname(chosenFile));
-        return { filePath: path.join(baseExtractionPath, chosenFile), content: await fs.readFile(path.join(baseExtractionPath, chosenFile), 'utf-8'), relativePath: chosenFile };
+        const determinedProjectRoot = path.join(searchBaseDir, path.dirname(chosenFile));
+        return { filePath: path.join(searchBaseDir, chosenFile), content: await fs.readFile(path.join(searchBaseDir, chosenFile), 'utf-8'), relativePath: chosenFile, projectRoot: determinedProjectRoot };
       }
       if (indexHtmlPaths.length > 0) {
          const chosenFile = indexHtmlPaths[0];
-         projectRootPath = path.join(baseExtractionPath, path.dirname(chosenFile));
-         return { filePath: path.join(baseExtractionPath, chosenFile), content: await fs.readFile(path.join(baseExtractionPath, chosenFile), 'utf-8'), relativePath: chosenFile };
+         const determinedProjectRoot = path.join(searchBaseDir, path.dirname(chosenFile));
+         return { filePath: path.join(searchBaseDir, chosenFile), content: await fs.readFile(path.join(searchBaseDir, chosenFile), 'utf-8'), relativePath: chosenFile, projectRoot: determinedProjectRoot };
       }
-      projectRootPath = baseExtractionPath; // Default if no key files found
-      return { filePath: null, content: null, relativePath: null };
+      // If a Git repo was cloned, projectRootPath is already baseExtractionDir.
+      // For ZIP, if no key files, default projectRoot to baseExtractionDir.
+      const determinedProjectRoot = githubUrl ? projectRootPath : searchBaseDir;
+      return { filePath: null, content: null, relativePath: null, projectRoot: determinedProjectRoot };
     };
 
-    const analysisResult = await findAnalysisFile(extractionPath, extractionPath);
+    const analysisResult = await findAnalysisFile(baseExtractionDir, baseExtractionDir);
     analysisFileRelativePath = analysisResult.relativePath;
     analysisFileContent = analysisResult.content;
+    projectRootPath = analysisResult.projectRoot; // This sets projectRootPath correctly for both Git and ZIP
 
     if (analysisFileRelativePath && analysisFileContent) {
         logsRef.value += `Framework detection input: content of '${analysisFileRelativePath}'. Project root set to: ${projectRootPath}\n`;
         frameworkDetectionResult = nonAIDetectFramework(analysisFileContent, analysisFileRelativePath, logsRef);
     } else {
-        projectRootPath = extractionPath; // Ensure projectRootPath is set even if no analysis file
         logsRef.value += `No suitable package.json or index.html found for framework detection. Project root defaulted to: ${projectRootPath}\n`;
         frameworkDetectionResult = nonAIDetectFramework(null, 'none_found', logsRef);
     }
@@ -326,22 +369,19 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
         let buildCommandToExecute = frameworkDetectionResult.build_command;
         const buildEnv = { ...process.env };
-        const publicUrlForAssets = `/sites/${finalProjectName}`; 
+        const publicUrlForAssets = `/sites/${finalProjectName}`;
 
         if (['cra', 'generic-react'].includes(frameworkDetectionResult.framework)) {
             buildEnv.PUBLIC_URL = publicUrlForAssets;
             logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for build.\n`;
         } else if (frameworkDetectionResult.framework === 'vite-react') {
             const viteBasePath = publicUrlForAssets.endsWith('/') ? publicUrlForAssets : `${publicUrlForAssets}/`;
-            buildCommandToExecute = `${buildCommandToExecute} --base=${viteBasePath}`;
-            logsRef.value += `Appending --base=${viteBasePath} to Vite build command.\n`;
+            buildCommandToExecute = `${buildCommandToExecute.replace('vite build', 'vite build --base ' + viteBasePath)}`;
+            logsRef.value += `Prepending --base ${viteBasePath} to Vite build command, resulting in: '${buildCommandToExecute}'.\n`;
         }
         else if (['nextjs', 'remix', 'sveltekit', 'nuxtjs', 'astro'].includes(frameworkDetectionResult.framework)) {
-            buildEnv.PUBLIC_URL = publicUrlForAssets;
-            logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for ${frameworkDetectionResult.framework} build (for potential asset prefixing if framework uses it).\n`;
-             if (frameworkDetectionResult.framework === 'nextjs') {
-                logsRef.value += `Note for Next.js: For proper asset prefixing, ensure 'basePath' or 'assetPrefix' is configured in next.config.js if deploying to a subpath.\n`;
-            }
+            buildEnv.PUBLIC_URL = publicUrlForAssets; // For asset prefixing if framework uses it
+            logsRef.value += `Setting PUBLIC_URL=${publicUrlForAssets} for ${frameworkDetectionResult.framework} build. Note: Framework-specific base path config (e.g., next.config.js) might be needed for full subpath compatibility.\n`;
         }
 
         logsRef.value += `Running build command: '${buildCommandToExecute}' in ${projectRootPath} with relevant env vars...\n`;
@@ -365,14 +405,14 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         if (!buildSourcePath) {
           const defaultOutputDirs = ['build', 'dist', 'out', '.next', '.output/public', 'public/build', '.svelte-kit/output/client'];
           for (const dir of defaultOutputDirs) {
-            if (detectedOutputDir === dir && buildSourcePath) continue; // Already checked if it was the detected one
+            if (detectedOutputDir === dir && buildSourcePath) continue;
             const potentialPath = path.join(projectRootPath, dir);
             try {
               await fs.access(potentialPath);
                if ((await fs.stat(potentialPath)).isDirectory()) {
                   buildSourcePath = potentialPath;
                   logsRef.value += `Found build output directory (fallback search) at: ${buildSourcePath}\n`;
-                  frameworkDetectionResult.output_directory = dir; // Update if found via fallback
+                  frameworkDetectionResult.output_directory = dir;
                   break;
               }
             } catch { /* Directory does not exist or not accessible */ }
@@ -397,7 +437,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         if (buildError.stdout) logsRef.value += `Build stdout:\n${buildError.stdout}\n`;
         if (buildError.stderr) logsRef.value += `Build command stderr:\n${buildError.stderr}\n`;
         if (buildError.stack) logsRef.value += `Build stack:\n${buildError.stack}\n`;
-        throw buildError; // Re-throw to be caught by the main try-catch
+        throw buildError;
       }
     } else {
       logsRef.value += `Static site or no build needed. Uploading files from ${projectRootPath} to S3 at s3://${OLA_S3_BUCKET_NAME}/${s3ProjectBaseKey}...\n`;
@@ -417,7 +457,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     };
 
   } catch (error: any) {
-    console.error('[deployProject] Entered CATCH block. Error type:', typeof error, 'Raw error:', error);
+    console.error('[deployProject] Entered CATCH block. Raw error:', error);
     logsRef.value += `\n--- ERROR DETAILS ---\n`;
     
     let e_message = "An unknown error occurred during deployment.";
@@ -435,7 +475,7 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         e_message = error;
         logsRef.value += `Error (string type): ${error}\n`;
     } else if (error && typeof error === 'object' && 'message' in error) {
-        e_message = String(error.message); // Ensure it's a string
+        e_message = String(error.message);
         if ('name' in error && typeof error.name === 'string') e_name = error.name;
         logsRef.value += `Error Object: ${JSON.stringify(error)}\n`;
     } else {
@@ -470,32 +510,32 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     console.error(`[deployProject] Error. Preparing to return failure result for project: ${finalProjectName}`);
     return {
         success: false,
-        message: `Deployment failed: ${detailedErrorMessage}`, // This message goes to the UI
+        message: `Deployment failed: ${detailedErrorMessage}`,
         logs: logSnippetForResponse,
         projectName: finalProjectName, 
     };
   } finally {
-    console.log(`[deployProject] Entered FINALLY block for project: ${finalProjectName}. UniqueExtractionDir: ${uniqueExtractionDir}`);
-    logsRef.value += `[deployProject] Entered FINALLY block. Cleaning up ${uniqueExtractionDir || 'N/A'}\n`;
-    if (uniqueExtractionDir && uniqueExtractionDir.startsWith(TEMP_UPLOAD_DIR) && uniqueExtractionDir !== TEMP_UPLOAD_DIR) {
+    console.log(`[deployProject] Entered FINALLY block for project: ${finalProjectName}. UniqueTempIdDir: ${uniqueTempIdDir}`);
+    logsRef.value += `[deployProject] Entered FINALLY block. Cleaning up ${uniqueTempIdDir || 'N/A'}\n`;
+    if (uniqueTempIdDir && uniqueTempIdDir.startsWith(TEMP_UPLOAD_DIR) && uniqueTempIdDir !== TEMP_UPLOAD_DIR) {
       try {
-        logsRef.value += `Attempting to delete temporary directory: ${uniqueExtractionDir}\n`;
-        console.log(`[deployProject] Attempting to delete temporary directory: ${uniqueExtractionDir}`);
-        await fs.rm(uniqueExtractionDir, { recursive: true, force: true });
-        logsRef.value += `Successfully deleted temporary directory: ${uniqueExtractionDir}\n`;
-        console.log(`[deployProject] Successfully deleted temporary directory: ${uniqueExtractionDir}`);
+        logsRef.value += `Attempting to delete temporary directory: ${uniqueTempIdDir}\n`;
+        console.log(`[deployProject] Attempting to delete temporary directory: ${uniqueTempIdDir}`);
+        await fs.rm(uniqueTempIdDir, { recursive: true, force: true });
+        logsRef.value += `Successfully deleted temporary directory: ${uniqueTempIdDir}\n`;
+        console.log(`[deployProject] Successfully deleted temporary directory: ${uniqueTempIdDir}`);
       } catch (cleanupError: any) {
-        const cleanupErrorMessage = `Error during cleanup of ${uniqueExtractionDir}: ${cleanupError.message}`;
+        const cleanupErrorMessage = `Error during cleanup of ${uniqueTempIdDir}: ${cleanupError.message}`;
         logsRef.value += `${cleanupErrorMessage}\n`;
         console.error(`[deployProject] ${cleanupErrorMessage}`, cleanupError.stack);
       }
     } else {
-      if (uniqueExtractionDir) {
-          const skipMessage = `Skipping deletion of non-specific or base temporary directory: ${uniqueExtractionDir}`;
+      if (uniqueTempIdDir) {
+          const skipMessage = `Skipping deletion of non-specific or base temporary directory: ${uniqueTempIdDir}`;
           logsRef.value += `${skipMessage}\n`;
           console.warn(`[deployProject] ${skipMessage}`);
       } else {
-          const skipMessage = `Skipping cleanup: uniqueExtractionDir was not set (likely due to an early error).`;
+          const skipMessage = `Skipping cleanup: uniqueTempIdDir was not set (likely due to an early error).`;
           logsRef.value += `${skipMessage}\n`;
           console.log(`[deployProject] ${skipMessage}`);
       }
