@@ -1,3 +1,4 @@
+
 // src/app/api/deploy-stream/[deploymentId]/route.ts
 import { type NextRequest, NextResponse } from 'next/server';
 import { getDeploymentState, type DeploymentProgress } from '@/lib/deploymentStore';
@@ -15,88 +16,98 @@ export async function GET(
       console.error("[SSE] Missing deploymentId in request params");
       return new Response('Missing deploymentId', { status: 400 });
     }
-    console.log(`[SSE:${deploymentId}] Connection initiated.`);
+    console.log(`[SSE:${deploymentId}] Connection initiated. Validating deployment ID.`);
+
+    // Initial check: If deployment state doesn't exist, don't bother starting a stream.
+    const initialDeploymentState = getDeploymentState(deploymentId);
+    if (!initialDeploymentState) {
+      console.warn(`[SSE:${deploymentId}] Initial check: Deployment state not found for ID. Aborting stream setup.`);
+      return new Response(JSON.stringify({ error: `Deployment ID '${deploymentId}' not found or has expired.` }), { 
+        status: 404, 
+        headers: { 'Content-Type': 'application/json' } 
+      });
+    }
+    console.log(`[SSE:${deploymentId}] Deployment ID validated. Preparing stream.`);
+
 
     const stream = new ReadableStream({
       async start(controller) {
-        console.log(`[SSE:${deploymentId}] Stream started.`);
+        console.log(`[SSE:${deploymentId}] Stream controller started.`);
         let lastLogIndex = 0;
         let lastStatus = '';
-        let clientClosed = false;
+        let clientClosed = false; // Flag to track if client has closed connection or stream should terminate
 
-        const sendData = (event: string, data: any) => {
-          if (clientClosed || controller.desiredSize === null) return; // Don't send if client gone or controller closed
+        const sendEvent = (event: string, data: any) => {
+          if (clientClosed || controller.desiredSize === null) {
+            // console.log(`[SSE:${deploymentId}] Attempted to send event '${event}' but client/controller is closed.`);
+            return;
+          }
           try {
             controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-          } catch (e) {
-            console.warn(`[SSE:${deploymentId}] Error enqueuing data:`, e instanceof Error ? e.message : String(e));
-            // Controller might be closed by client abort or server-side completion
+          } catch (e: any) {
+            console.warn(`[SSE:${deploymentId}] Error enqueuing data for event '${event}': ${e.message}. Marking client as closed.`);
+            clientClosed = true; // If enqueue fails, stream is likely broken
           }
         };
 
-        const intervalId = setInterval(() => {
-          if (clientClosed || controller.desiredSize === null) {
-            clearInterval(intervalId);
+        const poller = setInterval(() => {
+          if (clientClosed) { // If stream should terminate, stop polling and cleanup
+            clearInterval(poller);
+            // console.log(`[SSE:${deploymentId}] Poller stopped (clientClosed=${clientClosed}).`);
+            if (controller.desiredSize !== null) {
+              try { controller.close(); } catch (e) { /* ignore */ }
+            }
             return;
           }
 
           const currentState = getDeploymentState(deploymentId);
 
           if (currentState) {
-            // Send new logs
             if (currentState.logs.length > lastLogIndex) {
-              for (let i = lastLogIndex; i < currentState.logs.length; i++) {
-                sendData('log', currentState.logs[i]);
-              }
+              const newLogs = currentState.logs.slice(lastLogIndex);
+              newLogs.forEach(log => sendEvent('log', log));
               lastLogIndex = currentState.logs.length;
             }
 
-            // Send status update if changed
             if (currentState.status !== lastStatus) {
-              sendData('status', currentState.status);
+              sendEvent('status', currentState.status);
               lastStatus = currentState.status;
             }
             
             if (currentState.isDone) {
-              console.log(`[SSE:${deploymentId}] Deployment complete. Sending 'complete' event.`);
+              console.log(`[SSE:${deploymentId}] Poller: Deployment complete. Sending 'complete' event.`);
               const resultPayload = {
                 success: currentState.success,
                 message: currentState.success ? 'Deployment completed successfully.' : (currentState.error || 'Deployment failed.'),
                 projectName: currentState.projectName,
                 deployedUrl: currentState.deployedUrl,
                 error: currentState.error,
-                logs: currentState.logs // Send all logs at the end for completeness
+                logs: currentState.logs 
               };
-              sendData('complete', resultPayload);
-              clearInterval(intervalId);
-              if (!clientClosed && controller.desiredSize !== null) {
-                try { controller.close(); } catch (e) { /* ignore */ }
-              }
+              sendEvent('complete', resultPayload);
+              
+              clientClosed = true; // Mark to terminate stream
             }
-          } else {
-            console.warn(`[SSE:${deploymentId}] Deployment state not found. Sending error event.`);
-            sendData('error', { message: "Deployment state not found or removed. The deployment might have expired or failed to initialize." });
-            clearInterval(intervalId);
-            if (!clientClosed && controller.desiredSize !== null) {
-                try { controller.close(); } catch (e) { /* ignore */ }
-            }
+          } else { 
+            console.warn(`[SSE:${deploymentId}] Poller: Deployment state disappeared. Sending 'error' event and closing.`);
+            sendEvent('error', { message: "Deployment state not found or removed unexpectedly." });
+            clientClosed = true; // Mark to terminate stream
           }
-        }, 750);
+        }, 750); // Polling interval
 
+        // Handle client disconnect (e.g., browser tab closed)
         request.signal.addEventListener('abort', () => {
-          console.log(`[SSE:${deploymentId}] Client aborted connection.`);
-          clientClosed = true;
-          clearInterval(intervalId);
-          if (controller.desiredSize !== null) { // Check if controller is still open
-              try {
-                  controller.close();
-                  console.log(`[SSE:${deploymentId}] Controller closed due to client abort.`);
-              } catch (e) {
-                  // console.warn(`[SSE:${deploymentId}] Error closing controller on abort:`, e instanceof Error ? e.message : String(e));
-              }
-          }
+          console.log(`[SSE:${deploymentId}] Client aborted connection (request.signal detected).`);
+          clientClosed = true; // This will be picked up by the poller to stop and cleanup
         });
+
       },
+      cancel(reason) {
+        // This is called if the consumer of the stream (e.g. Next.js server) cancels it.
+        console.log(`[SSE:${deploymentId}] Stream explicitly cancelled by consumer. Reason:`, reason);
+        // The `clientClosed` flag and poller clearInterval should handle cleanup.
+        // No direct controller.close() here as the ReadableStream API handles it.
+      }
     });
 
     return new Response(stream, {
@@ -104,13 +115,13 @@ export async function GET(
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
+        'X-Accel-Buffering': 'no', // For Nginx and similar proxies
       },
     });
 
-  } catch (error: any) {
+  } catch (error: any) { 
     const deploymentId = params?.deploymentId || "unknown_deployment";
-    console.error(`[SSE:${deploymentId}] CRITICAL ERROR in GET handler:`, error.message, error.stack);
-    return new Response('Internal Server Error establishing stream', { status: 500 });
+    console.error(`[SSE:${deploymentId}] CRITICAL ERROR in GET handler during stream setup: ${error.message}`, error.stack);
+    return new Response(`Server error establishing stream: ${error.message}`, { status: 500 });
   }
 }
