@@ -24,25 +24,34 @@ export interface DeploymentResult {
 
 function extractErrorMessage(error: any): string {
   const defaultMessage = 'An unknown error occurred.';
+  const maxLength = 250; // Max length for extracted error messages
+
   if (!error) return defaultMessage;
+
+  let extractedMessage: string;
 
   if (error instanceof Error) {
     let message = error.message || defaultMessage;
     if (error.name) {
       message = `${error.name}: ${message}`;
     }
-    return message;
+    extractedMessage = message;
+  } else if (typeof error === 'string') {
+    extractedMessage = error || defaultMessage;
+  } else {
+    try {
+      const stringified = JSON.stringify(error);
+      if (stringified === '{}' && Object.keys(error).length === 0 && !(error instanceof Date)) {
+        extractedMessage = defaultMessage;
+      } else {
+        extractedMessage = stringified;
+      }
+    } catch (e) {
+      extractedMessage = `Could not stringify error object. Original error type: ${Object.prototype.toString.call(error)}. ${defaultMessage}`;
+    }
   }
-  if (typeof error === 'string') {
-    return error || defaultMessage;
-  }
-  try {
-    const stringified = JSON.stringify(error);
-    if (stringified === '{}' && Object.keys(error).length === 0 && !(error instanceof Date)) return defaultMessage;
-    return stringified;
-  } catch (e) {
-    return `Could not stringify error object. Original error type: ${Object.prototype.toString.call(error)}. ${defaultMessage}`;
-  }
+  
+  return extractedMessage.length > maxLength ? extractedMessage.substring(0, maxLength - 3) + '...' : extractedMessage;
 }
 
 
@@ -488,11 +497,11 @@ async function performFullDeployment(
       message: 'Project deployed successfully!',
       projectName: finalProjectName,
       deployedUrl,
-      logs: internalLogs,
+      logs: internalLogs, // Return all logs on success for full transparency
     };
 
   } catch (error: any) {
-    const errorMessage = extractErrorMessage(error);
+    const errorMessage = extractErrorMessage(error); // Already truncated by extractErrorMessage
     const errorName = error instanceof Error ? error.name : "UnknownErrorInPerformFullDeployment";
     console.error(`${logPrefix} CRITICAL FAILURE. Project: ${finalProjectNameForErrorHandling}. Error (${errorName}): ${errorMessage}`, error.stack || error);
 
@@ -500,26 +509,30 @@ async function performFullDeployment(
     internalLogs.push(`Error Type: ${errorName}`);
     internalLogs.push(`Error Message: ${errorMessage}`);
     if (error instanceof Error && error.stack) {
-        internalLogs.push(`Stack Trace (condensed for client log):\n${error.stack.substring(0, 500)}...`);
+        internalLogs.push(`Stack Trace (condensed for server log):\n${error.stack}`); // Full stack for server
     }
 
-    const MAX_LOG_LINES_IN_ERROR_RESPONSE = 30;
-    let errorLogsForClient = [...internalLogs];
-    if (errorLogsForClient.length > MAX_LOG_LINES_IN_ERROR_RESPONSE) {
-        errorLogsForClient = [
-            `Log truncated for client. Showing last ${MAX_LOG_LINES_IN_ERROR_RESPONSE} of ${errorLogsForClient.length} lines. Full logs on server.`,
-            ...errorLogsForClient.slice(-MAX_LOG_LINES_IN_ERROR_RESPONSE)
-        ];
-    } else if (errorLogsForClient.length === 0) {
-        errorLogsForClient.push("No specific logs captured before error in performFullDeployment.");
+    // Simplified logs for client
+    const clientErrorLogs: string[] = [
+        `Deployment error for project: ${finalProjectNameForErrorHandling}.`,
+        `Details: ${errorMessage}`,
+        `Incident ID: ${deploymentIdForLogging}`
+    ];
+    if (error instanceof MissingS3ConfigError) {
+      clientErrorLogs.push("This may be due to missing S3 configuration (e.g. endpoint, keys, bucket name). Please check server environment variables.");
+    } else if (errorMessage.toLowerCase().includes("npm install failed") || errorMessage.toLowerCase().includes("project build failed")) {
+      clientErrorLogs.push("This could be due to issues with project dependencies or the build command. Check server logs for more details.");
+    } else {
+      clientErrorLogs.push("An unexpected error occurred during deployment. Check server logs for more details.");
     }
+
 
     return {
         success: false,
         message: `Deployment failed: ${errorMessage}`,
         projectName: finalProjectNameForErrorHandling || 'error-handling-project',
         error: errorMessage,
-        logs: errorLogsForClient,
+        logs: clientErrorLogs, // Send simplified logs to client
     };
 
   } finally {
@@ -538,14 +551,16 @@ async function performFullDeployment(
     } else {
        internalLogs.push(`${logFinallyPrefix} Skipped deletion of temp directory (path issue or not set): ${uniqueTempIdDir || 'Not Set'}`);
     }
+    // Full internal logs can be written to a server log file here if desired, e.g., for later audit.
+    // console.log(`${logPrefix} Full internal logs:\n${internalLogs.join('\n')}`);
   }
 }
 
 export async function deployProject(formData: FormData): Promise<DeploymentResult> {
   const actionLogPrefix = "[deployProject:Action]";
   let projNameForError: string = 'unknown-project-early-error';
-
-  // Initialize with a default error state to ensure a DeploymentResult is always potentially returnable
+  
+  // Ensure resultForReturn is always initialized with a valid DeploymentResult structure
   let resultForReturn: DeploymentResult = {
     success: false,
     message: 'Deployment action initiated but an unexpected error occurred before processing could complete.',
@@ -556,9 +571,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
 
   try {
     console.log(`${actionLogPrefix} Entered function.`);
-    const userId = 'default-user'; // Placeholder for temporary bypass
+    const userId = 'default-user'; 
 
-    console.log(`${actionLogPrefix} Received formData. Keys: ${Array.from(formData.keys()).join(', ')}`);
     const file = formData.get('zipfile') as File | null;
     const githubUrl = formData.get('githubUrl') as string | null;
 
@@ -566,9 +580,8 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
         console.log(`${actionLogPrefix} zipfile details: name=${file?.name}, size=${file?.size}, type=${file?.type}`);
         projNameForError = sanitizeName(file.name);
          if (!file.name.toLowerCase().endsWith('.zip') && file.type !== 'application/zip' && file.type !== 'application/x-zip-compressed') {
-            console.error(`${actionLogPrefix} CRITICAL: Client submitted a file that is not a ZIP. Name: ${file.name}, Type: ${file.type}`);
-             const errorMsg = `Invalid file type: "${file.name}". Only .zip files are allowed. Detected type: ${file.type}.`;
-             // Overwrite resultForReturn with this specific error
+            const errorMsg = `Invalid file type: "${file.name}". Only .zip files are allowed. Detected type: ${file.type}.`;
+            console.error(`${actionLogPrefix} CRITICAL: ${errorMsg}`);
              resultForReturn = {
                 success: false,
                 message: errorMsg,
@@ -576,7 +589,6 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
                 error: errorMsg,
                 logs: [`${actionLogPrefix} Error: ${errorMsg}`]
             };
-            // Early return for this specific validation error
             console.log(`${actionLogPrefix} Returning due to invalid file type. Result: ${JSON.stringify(resultForReturn, null, 2)}`);
             return resultForReturn;
         }
@@ -586,58 +598,48 @@ export async function deployProject(formData: FormData): Promise<DeploymentResul
     } else {
          projNameForError = 'no-source-provided';
     }
-    // Update projectName in the default error object now that we might have a better name
-    resultForReturn.projectName = projNameForError;
+    resultForReturn.projectName = projNameForError; // Update project name in the default/ongoing result
 
     console.log(`${actionLogPrefix} Calling performFullDeployment for user ${userId}...`);
-    resultForReturn = await performFullDeployment(userId, formData); // This will overwrite resultForReturn
+    resultForReturn = await performFullDeployment(userId, formData); 
     console.log(`${actionLogPrefix} performFullDeployment returned. Success: ${resultForReturn.success}`);
 
   } catch (error: any) {
-    const errorMsg = extractErrorMessage(error);
+    const errorMsg = extractErrorMessage(error); // Truncated by extractErrorMessage
     const errorName = error instanceof Error ? error.name : "UnknownErrorInDeployProject";
     console.error(`${actionLogPrefix} CRITICAL UNHANDLED error in deployProject's try block. Error (${errorName}): ${errorMsg}`, error instanceof Error ? error.stack : error);
-
-    const MAX_LOG_LINES_IN_ACTION_ERROR_RESPONSE = 10;
-    let actionErrorLogs = [
-        `${actionLogPrefix} A critical unhandled error was caught in the deployProject action.`,
-        `Error Type: ${errorName}`,
-        `Error Message: ${errorMsg}`,
+    
+    // Simplified logs for client
+    const actionErrorLogs: string[] = [
+        `${actionLogPrefix} Critical server error: ${errorMsg}`,
+        `Project context: ${projNameForError}`,
+        `If issues persist, check server logs.`
     ];
-    if (error instanceof Error && error.stack) {
-        actionErrorLogs.push(`Stack (first 200 chars): ${error.stack.substring(0, 200)}...`);
-    }
-    if (actionErrorLogs.length > MAX_LOG_LINES_IN_ACTION_ERROR_RESPONSE) {
-        actionErrorLogs = actionErrorLogs.slice(0, MAX_LOG_LINES_IN_ACTION_ERROR_RESPONSE);
-        actionErrorLogs.push("...more logs truncated for client response.");
-    }
-    // Overwrite resultForReturn with this specific error
+    
     resultForReturn = {
         success: false,
         message: `Deployment process encountered a critical server error: ${errorMsg}`,
-        projectName: projNameForError, // Use the name determined before the main call
+        projectName: projNameForError,
         error: errorMsg,
         logs: actionErrorLogs,
     };
   } finally {
     // This block is primarily for logging the final result before returning.
-    // It should not modify resultForReturn or throw new errors that would prevent returning.
+    // It should not modify resultForReturn further or throw new errors.
     try {
-        // Ensure resultForReturn is always defined and serializable for logging
+        // Ensure resultToLog is always a valid DeploymentResult structure
         const resultToLog = resultForReturn || {
             success: false,
-            message: "Result object was unexpectedly undefined in finally block.",
+            message: "Result object was unexpectedly undefined in deployProject finally block.",
             projectName: projNameForError,
             error: "Result undefined in finally.",
-            logs: ["Critical: resultForReturn was undefined in finally block."]
+            logs: ["Critical: resultForReturn was undefined in deployProject finally block."]
         };
-        const resultString = JSON.stringify(resultToLog, null, 2);
-        console.log(`${actionLogPrefix} Final result being returned to client: ${resultString}`);
+        // Only log a summary to avoid overly verbose server logs here; full logs are in performFullDeployment
+        console.log(`${actionLogPrefix} Final result for client: Success=${resultToLog.success}, Msg=${resultToLog.message.substring(0,100)}..., Project=${resultToLog.projectName}`);
     } catch (stringifyError: any) {
-        const stringifyErrorMsg = extractErrorMessage(stringifyError)
-        console.error(`${actionLogPrefix} CRITICAL: Could not stringify 'resultForReturn' for logging in 'finally' block. Error: ${stringifyErrorMsg}`, resultForReturn);
-        // Do NOT re-throw or modify resultForReturn here, as that could mask the original error
-        // or cause the promise to reject incorrectly. The original resultForReturn will still be returned.
+        const stringifyErrorMsg = extractErrorMessage(stringifyError);
+        console.error(`${actionLogPrefix} CRITICAL: Could not summarize 'resultForReturn' for logging in 'finally' block. Error: ${stringifyErrorMsg}`);
     }
   }
   return resultForReturn;
