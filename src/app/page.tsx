@@ -11,9 +11,6 @@ import { Button } from '@/components/ui/button';
 import { Chrome, GithubIcon, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Navbar } from '@/components/Navbar';
-// UploadCard is not directly rendered here anymore, users go to dashboard after login
-// import { UploadCard } from '@/components/deploy-ease/UploadCard';
-
 
 export default function HomePage() {
   const { currentUser, loading } = useAuth();
@@ -45,7 +42,7 @@ export default function HomePage() {
       } else if (error.code === 'auth/popup-blocked') {
         description = "Popup was blocked by the browser. Please allow popups for this site.";
       } else if (error.code === 'auth/unauthorized-domain') {
-        description = `This app's domain is not authorized for Firebase sign-in. Please ensure 'localhost' (for local dev) or your deployed domain is in the authorized domains list for Firebase project ID: ${firebaseConfig.projectId || 'UNKNOWN'}. Check Firebase console.`;
+         description = `This app's domain is not authorized for Firebase sign-in. Please ensure 'localhost' (for local dev) or your deployed domain is in the authorized domains list for Firebase project ID: ${firebaseConfig.projectId || 'UNKNOWN'}. Check Firebase console.`;
       }
       toast({
         title: "Sign In Failed",
@@ -72,39 +69,34 @@ export default function HomePage() {
       <Navbar />
       <div className="flex flex-col items-center justify-center flex-grow w-full text-center">
         <h1
-          className="text-6xl sm:text-7xl md:text-8xl font-bold tracking-tight mb-8 animated-gradient-text-fill"
+          className="text-6xl sm:text-7xl md:text-8xl font-bold tracking-tight mb-12 animated-gradient-text-fill"
           data-text="DeployEase"
         >
           DeployEase
         </h1>
-        <p className="text-xl sm:text-2xl text-muted-foreground mb-12 max-w-2xl">
-          The simplest way to deploy your React and static web projects.
-          Connect your GitHub or upload a ZIP and get your site live in minutes.
-        </p>
         
-        <div className="space-y-4 sm:space-y-0 sm:space-x-4 flex flex-col sm:flex-row items-center justify-center">
+        <div className="space-y-4 sm:space-y-0 sm:space-x-6 flex flex-col sm:flex-row items-center justify-center">
            {googleProvider && (
             <Button
               onClick={() => handleSignIn(googleProvider)}
+              variant="default"
               size="lg"
-              className="w-full sm:w-auto text-lg py-7 px-8 bg-card hover:bg-card/90 border border-input"
+              className="w-full max-w-[280px] sm:w-72 text-lg py-6" // Adjusted width and padding
             >
-              <Chrome className="mr-3 h-6 w-6" /> Sign In with Google
+              <Chrome className="mr-3 h-5 w-5" /> Sign In with Google
             </Button>
           )}
           {githubProvider && (
             <Button
               onClick={() => handleSignIn(githubProvider)}
+              variant="default"
               size="lg"
-              className="w-full sm:w-auto text-lg py-7 px-8 bg-card hover:bg-card/90 border border-input"
+              className="w-full max-w-[280px] sm:w-72 text-lg py-6" // Adjusted width and padding
             >
-              <GithubIcon className="mr-3 h-6 w-6" /> Sign In with GitHub
+              <GithubIcon className="mr-3 h-5 w-5" /> Sign In with GitHub
             </Button>
           )}
         </div>
-         <p className="mt-8 text-sm text-muted-foreground">
-          No account? Signing in will create one for you.
-        </p>
       </div>
     </div>
   );
