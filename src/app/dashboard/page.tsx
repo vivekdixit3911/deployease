@@ -1,55 +1,164 @@
+
 // src/app/dashboard/page.tsx
 'use client';
 
-// import { useEffect, useState } from 'react'; // useState might not be needed
-// import { useRouter } from 'next/navigation';
-// import { useAuth } from '@/contexts/AuthContext';
-// import { Button } from '@/components/ui/button';
-// import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-// import { Loader2, ShieldAlert, ListOrdered, ExternalLink, PlusCircle } from 'lucide-react';
-// import Link from 'next/link';
-
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Loader2, ExternalLink, PlusCircle, ListOrdered, Server, CalendarDays, Globe } from 'lucide-react';
 import { UploadCard } from '@/components/deploy-ease/UploadCard';
 import { Navbar } from '@/components/Navbar';
+import { db } from '@/lib/firebase';
+import { collection, query, orderBy, getDocs, Timestamp } from 'firebase/firestore';
+import { formatDistanceToNow } from 'date-fns';
 
-// interface DeployedProject { // No longer displaying projects here
-//   id: string;
-//   projectName: string;
-//   deployedUrl: string;
-//   createdAt: Date;
-// }
+
+interface DeployedProject {
+  id: string; // Firestore document ID (deploymentId)
+  projectName: string;
+  deployedUrl: string;
+  s3Path: string;
+  framework: string;
+  createdAt: Date; // Converted from Firestore Timestamp
+}
 
 export default function DashboardPage() {
-  // const { currentUser, loading: authLoading, signOut } = useAuth(); // Removed
-  // const router = useRouter(); // Removed
-  // const [projects, setProjects] = useState<DeployedProject[]>([]); // Removed
-  // const [loadingProjects, setLoadingProjects] = useState(true); // Removed
+  const { currentUser, loading: authLoading } = useAuth();
+  const router = useRouter();
+  const [projects, setProjects] = useState<DeployedProject[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState(true);
 
-  // useEffect(() => { // Removed auth redirection and project fetching
-  //   if (!authLoading && !currentUser) {
-  //     router.push('/login');
-  //   } else if (currentUser) {
-  //     setLoadingProjects(false);
-  //     setProjects([]);
-  //   }
-  // }, [currentUser, authLoading, router]);
+  useEffect(() => {
+    if (!authLoading && !currentUser) {
+      router.push('/login');
+    } else if (currentUser) {
+      const fetchProjects = async () => {
+        if (!db) {
+          console.error("Firestore DB instance not available for fetching projects.");
+          setLoadingProjects(false);
+          return;
+        }
+        try {
+          setLoadingProjects(true);
+          const projectsColRef = collection(db, `users/${currentUser.uid}/projects`);
+          const q = query(projectsColRef, orderBy('createdAt', 'desc'));
+          const querySnapshot = await getDocs(q);
+          const userProjects = querySnapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              projectName: data.projectName,
+              deployedUrl: data.deployedUrl,
+              s3Path: data.s3Path,
+              framework: data.framework || 'unknown',
+              createdAt: (data.createdAt as Timestamp).toDate(), // Convert Firestore Timestamp to JS Date
+            };
+          });
+          setProjects(userProjects);
+        } catch (error) {
+          console.error("Error fetching projects:", error);
+          // Optionally, show a toast to the user
+        } finally {
+          setLoadingProjects(false);
+        }
+      };
+      fetchProjects();
+    }
+  }, [currentUser, authLoading, router]);
 
-  // if (authLoading || (!authLoading && !currentUser)) { // Removed loading state for auth check
-  //   return (
-  //     <div className="min-h-screen flex items-center justify-center p-4">
-  //       <Loader2 className="h-12 w-12 animate-spin text-primary" />
-  //       <p className="ml-4 text-lg">Loading dashboard...</p>
-  //     </div>
-  //   );
-  // }
+  if (authLoading || (!currentUser && !authLoading)) {
+    return (
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4">
+        <Navbar />
+        <div className="flex-grow flex flex-col items-center justify-center">
+          <Loader2 className="h-12 w-12 animate-spin text-primary" />
+          <p className="ml-4 text-lg text-muted-foreground">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center bg-background pt-4 sm:pt-8 md:pt-12 p-4">
       <Navbar />
-      <div className="flex flex-col items-center justify-center flex-grow w-full">
-         <UploadCard />
+      <div className="container mx-auto px-4 py-8">
+        <div className="mb-10">
+          <h2 className="text-3xl font-bold tracking-tight mb-2 text-center sm:text-left">Deploy New Project</h2>
+           <UploadCard />
+        </div>
+        
+        <div className="mt-12">
+          <h2 className="text-3xl font-bold tracking-tight mb-6 text-center sm:text-left flex items-center">
+            <ListOrdered className="mr-3 h-8 w-8 text-primary" />
+            Your Deployed Projects
+          </h2>
+          {loadingProjects ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {[1,2,3].map(i => (
+                <Card key={i} className="shadow-lg animate-pulse">
+                  <CardHeader>
+                    <div className="h-6 bg-muted rounded w-3/4"></div>
+                    <div className="h-4 bg-muted rounded w-1/2 mt-2"></div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="h-4 bg-muted rounded w-full mb-2"></div>
+                    <div className="h-4 bg-muted rounded w-5/6"></div>
+                  </CardContent>
+                  <CardFooter>
+                    <div className="h-8 bg-muted rounded w-1/3"></div>
+                  </CardFooter>
+                </Card>
+              ))}
+            </div>
+          ) : projects.length === 0 ? (
+            <Card className="shadow-lg text-center py-12">
+              <CardContent>
+                <Server className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
+                <p className="text-xl font-semibold text-muted-foreground">No projects deployed yet.</p>
+                <p className="text-sm text-muted-foreground mt-2">Use the form above to deploy your first project!</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {projects.map((project) => (
+                <Card key={project.id} className="shadow-lg hover:shadow-xl transition-shadow duration-300 flex flex-col">
+                  <CardHeader>
+                    <CardTitle className="text-2xl truncate">{project.projectName}</CardTitle>
+                    <CardDescription className="flex items-center text-sm">
+                       <Globe className="h-4 w-4 mr-1.5 text-sky-500" /> Type: {project.framework || 'Static'}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex-grow">
+                     <p className="text-sm text-muted-foreground flex items-center mb-1">
+                      <CalendarDays className="h-4 w-4 mr-1.5 text-primary/80" />
+                      Deployed: {formatDistanceToNow(project.createdAt, { addSuffix: true })}
+                    </p>
+                    <p className="text-sm text-muted-foreground truncate">
+                       S3 Path: <span className="font-mono text-xs">{project.s3Path}</span>
+                    </p>
+                  </CardContent>
+                  <CardFooter>
+                    <Button asChild variant="default" size="sm" className="w-full">
+                      <a href={project.deployedUrl} target="_blank" rel="noopener noreferrer" className="flex items-center">
+                        <ExternalLink className="h-4 w-4 mr-2" />
+                        View Site
+                      </a>
+                    </Button>
+                  </CardFooter>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+         <div className="mt-16 text-center">
+            <Button variant="outline" onClick={() => router.push('/')} className="text-lg py-6 px-8">
+                <PlusCircle className="mr-2 h-5 w-5" /> Deploy Another Project
+            </Button>
+        </div>
       </div>
-      {/* Removed all previous dashboard content */}
     </div>
   );
 }

@@ -1,3 +1,4 @@
+
 // src/components/deploy-ease/UploadCard.tsx
 'use client';
 
@@ -13,7 +14,7 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useAuth } from '@/contexts/AuthContext';
-import Link from 'next/link'; // Keep Link for potential future use or if Navbar needs it
+// import Link from 'next/link'; // Keep Link for potential future use or if Navbar needs it (No longer needed directly here)
 
 export function UploadCard() {
   const [file, setFile] = useState<File | null>(null);
@@ -78,11 +79,10 @@ export function UploadCard() {
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    // Temporarily bypassed for development:
-    // if (!currentUser) {
-    //   toast({ title: "Authentication Required", description: "Please sign in to deploy projects.", variant: "destructive" });
-    //   return;
-    // }
+    if (!currentUser) {
+      toast({ title: "Authentication Required", description: "Please sign in to deploy projects.", variant: "destructive" });
+      return;
+    }
 
     if (!file && !githubUrl) {
       toast({ title: "No Input", description: "Please select a ZIP file or enter a GitHub URL.", variant: "destructive" });
@@ -106,9 +106,8 @@ export function UploadCard() {
     } else if (githubUrl) {
       formData.append('githubUrl', githubUrl);
     }
+    formData.append('userId', currentUser.uid); // Add userId to FormData
     
-    // If currentUser is null due to bypass, actions.ts uses 'default-user'.
-    // If user *is* logged in (e.g. via Navbar), their actual ID would be used if actions.ts was modified to accept it.
 
     try {
       const result = await deployProject(formData);
@@ -155,35 +154,32 @@ export function UploadCard() {
     }
   };
 
-  // Temporarily bypassed for development:
-  // if (authLoading) {
-  //   return (
-  //     <Card className="w-full max-w-2xl shadow-xl p-10 text-center">
-  //       <Loader2 className="h-10 w-10 animate-spin text-primary mx-auto mb-4" />
-  //       <p>Loading user session...</p>
-  //     </Card>
-  //   );
-  // }
 
-  // Temporarily bypassed for development:
-  // if (!currentUser && !authLoading) { // Check !authLoading to prevent flicker if auth is fast
-  //   return (
-  //     <Card className="w-full max-w-2xl shadow-xl">
-  //       <CardHeader>
-  //         <CardTitle className="text-3xl font-headline text-center">DeployEase</CardTitle>
-  //       </CardHeader>
-  //       <CardContent className="text-center p-10">
-  //         <ShieldAlert className="h-16 w-16 text-destructive mx-auto mb-4" />
-  //         <h3 className="text-xl font-semibold mb-2">Authentication Required</h3>
-  //         <p className="text-muted-foreground mb-6">
-  //           Please sign in to deploy your projects. You can still use the Navbar to sign in.
-  //         </p>
-  //         {/* Button to sign-in could be added here if desired, linking to /login or using Navbar's logic */}
-  //         {/* For now, relying on Navbar for sign-in if user wants to */}
-  //       </CardContent>
-  //     </Card>
-  //   );
-  // }
+  if (authLoading) { // Re-enable auth loading state
+    return (
+      <Card className="w-full max-w-2xl shadow-xl p-10 text-center">
+        <Loader2 className="h-10 w-10 animate-spin text-primary mx-auto mb-4" />
+        <p>Loading user session...</p>
+      </Card>
+    );
+  }
+
+  if (!currentUser && !authLoading) { // Re-enable auth check
+    return (
+      <Card className="w-full max-w-2xl shadow-xl">
+        <CardHeader>
+          <CardTitle className="text-3xl font-headline text-center">DeployEase</CardTitle>
+        </CardHeader>
+        <CardContent className="text-center p-10">
+          <ShieldAlert className="h-16 w-16 text-destructive mx-auto mb-4" />
+          <h3 className="text-xl font-semibold mb-2">Authentication Required</h3>
+          <p className="text-muted-foreground mb-6">
+            Please sign in to deploy your projects. You can use the Navbar to sign in or register.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
 
   return (
@@ -191,7 +187,7 @@ export function UploadCard() {
       <CardHeader>
         <CardTitle className="text-3xl font-headline text-center">Deploy Your Project</CardTitle>
         <CardDescription className="text-center">
-          {currentUser ? `Welcome, ${currentUser.displayName || currentUser.email}!` : 'Upload a ZIP or provide a GitHub URL.'}
+          {currentUser ? `Welcome, ${currentUser.displayName || currentUser.email}! Ready to deploy.` : 'Upload a ZIP or provide a GitHub URL.'}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -310,7 +306,7 @@ export function UploadCard() {
       {!isProcessing && !deploymentResult && (
         <CardFooter>
           <p className="text-xs text-muted-foreground text-center w-full">
-            Ready to deploy your project.
+            {currentUser ? "Ready to deploy your next project." : "Please sign in to start deploying."}
           </p>
         </CardFooter>
       )}
