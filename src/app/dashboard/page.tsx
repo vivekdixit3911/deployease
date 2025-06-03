@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import type { User } from 'firebase/auth'; // Import User type
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,6 +47,10 @@ export default function DashboardPage() {
     return name[0].toUpperCase();
   };
 
+  const handleSignOut = async () => {
+    await signOut();
+    router.push('/login');
+  };
 
   useEffect(() => {
     if (!authLoading && !currentUser) {
@@ -99,14 +104,13 @@ export default function DashboardPage() {
     );
   }
   
-  const handleSignOut = async () => {
-    await signOut();
-    router.push('/login');
-  };
-
+  // The error occurs on the next line, where the main div starts
   return (
     <div className="min-h-screen w-full flex flex-col items-center bg-background pt-4 sm:pt-8 md:pt-12 p-4">
-      {currentUser && (
+      <h1>Dashboard Test Page</h1>
+      <p>If this builds, the error is in the commented out content below.</p>
+      
+      {/* {currentUser && (
          <div className="absolute top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-50">
            <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -207,10 +211,11 @@ export default function DashboardPage() {
          <div className="mt-16 text-center">
             {/* This button could be removed or repurposed if not needed, or styled as primary action */}
             {/* <Button variant="outline" onClick={() => { /* Reset UploadCard or scroll to top */ }} className="text-lg py-6 px-8">
-                <PlusCircle className="mr-2 h-5 w-5" /> Deploy Another Project
-            </Button> */}
-        </div>
-      </div>
+            //     <PlusCircle className="mr-2 h-5 w-5" /> Deploy Another Project
+            // </Button> */}
+        //</div>
+      //</div> */}
     </div>
   );
 }
+
