@@ -52,7 +52,7 @@ export default function HomePage() {
 
   if (loading || (!loading && currentUser)) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4 text-center relative">
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4 text-center">
         <div className="flex-grow flex flex-col items-center justify-center">
           <Loader2 className="h-16 w-16 animate-spin mb-6 text-primary" />
           <p className="text-xl text-muted-foreground">Loading session...</p>
@@ -63,14 +63,20 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4">
-      <div className="flex flex-col items-center justify-center flex-grow w-full text-center">
-        <div className="space-y-4 sm:space-y-0 sm:space-x-6 flex flex-col sm:flex-row items-center justify-center">
+      <div className="flex flex-col items-center justify-center flex-grow w-full text-center space-y-10">
+        <h1 
+            className="text-7xl sm:text-8xl md:text-9xl font-bold font-headline animated-gradient-text-fill select-none"
+            data-text="DeployEase"
+        >
+            DeployEase
+        </h1>
+        <div className="space-y-4 sm:space-y-6 flex flex-col items-center justify-center">
            {googleProvider && (
             <Button
               onClick={() => handleSignIn(googleProvider)}
-              variant="default"
+              variant="default" 
               size="lg"
-              className="w-full max-w-[280px] sm:w-72 text-lg py-6"
+              className="w-full max-w-xs sm:max-w-sm md:max-w-md text-lg py-3 sm:py-4 px-6"
             >
               <Chrome className="mr-3 h-5 w-5" /> Sign In with Google
             </Button>
@@ -80,7 +86,7 @@ export default function HomePage() {
               onClick={() => handleSignIn(githubProvider)}
               variant="default"
               size="lg"
-              className="w-full max-w-[280px] sm:w-72 text-lg py-6"
+              className="w-full max-w-xs sm:max-w-sm md:max-w-md text-lg py-3 sm:py-4 px-6"
             >
               <GithubIcon className="mr-3 h-5 w-5" /> Sign In with GitHub
             </Button>
