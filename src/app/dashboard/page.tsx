@@ -1,4 +1,3 @@
-
 // src/app/dashboard/page.tsx
 'use client';
 
@@ -8,9 +7,17 @@ import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Loader2, ExternalLink, PlusCircle, ListOrdered, Server, CalendarDays, Globe } from 'lucide-react';
+import { Loader2, ExternalLink, PlusCircle, ListOrdered, Server, CalendarDays, Globe, LogOut, UserCircle } from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { UploadCard } from '@/components/deploy-ease/UploadCard';
-import { Navbar } from '@/components/Navbar';
 import { db } from '@/lib/firebase';
 import { collection, query, orderBy, getDocs, Timestamp } from 'firebase/firestore';
 import { formatDistanceToNow } from 'date-fns';
@@ -26,10 +33,20 @@ interface DeployedProject {
 }
 
 export default function DashboardPage() {
-  const { currentUser, loading: authLoading } = useAuth();
+  const { currentUser, signOut, loading: authLoading } = useAuth();
   const router = useRouter();
   const [projects, setProjects] = useState<DeployedProject[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
+
+  const getInitials = (name: string | null | undefined) => {
+    if (!name) return 'U';
+    const names = name.split(' ');
+    if (names.length > 1) {
+      return `${names[0][0]}${names[names.length - 1][0]}`.toUpperCase();
+    }
+    return name[0].toUpperCase();
+  };
+
 
   useEffect(() => {
     if (!authLoading && !currentUser) {
@@ -72,7 +89,9 @@ export default function DashboardPage() {
   if (authLoading || (!currentUser && !authLoading)) {
     return (
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4">
-        <Navbar />
+        <div className="absolute top-4 right-4">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        </div>
         <div className="flex-grow flex flex-col items-center justify-center">
           <Loader2 className="h-12 w-12 animate-spin text-primary" />
           <p className="ml-4 text-lg text-muted-foreground">Loading dashboard...</p>
@@ -80,10 +99,43 @@ export default function DashboardPage() {
       </div>
     );
   }
+  
+  const handleSignOut = async () => {
+    await signOut();
+    router.push('/login');
+  };
 
   return (
     <div className="min-h-screen w-full flex flex-col items-center bg-background pt-4 sm:pt-8 md:pt-12 p-4">
-      <Navbar />
+      {currentUser && (
+         <div className="absolute top-4 right-4 sm:top-6 sm:right-6 md:top-8 md:right-8 z-50">
+           <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="relative h-10 w-10 rounded-full">
+                <Avatar className="h-10 w-10 border-2 border-primary/50">
+                  <AvatarImage src={currentUser.photoURL || undefined} alt={currentUser.displayName || "User"} />
+                  <AvatarFallback>{getInitials(currentUser.displayName)}</AvatarFallback>
+                </Avatar>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="w-56" align="end" forceMount>
+              <DropdownMenuLabel className="font-normal">
+                <div className="flex flex-col space-y-1">
+                  <p className="text-sm font-medium leading-none">{currentUser.displayName || "User"}</p>
+                  <p className="text-xs leading-none text-muted-foreground">
+                    {currentUser.email}
+                  </p>
+                </div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer">
+                <LogOut className="mr-2 h-4 w-4" />
+                <span>Sign Out</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
       <div className="container mx-auto px-4 py-8">
         <div className="mb-10">
           <h2 className="text-3xl font-bold tracking-tight mb-2 text-center sm:text-left">Deploy New Project</h2>
@@ -154,9 +206,10 @@ export default function DashboardPage() {
           )}
         </div>
          <div className="mt-16 text-center">
-            <Button variant="outline" onClick={() => router.push('/')} className="text-lg py-6 px-8">
+            {/* This button could be removed or repurposed if not needed, or styled as primary action */}
+            {/* <Button variant="outline" onClick={() => { /* Reset UploadCard or scroll to top */ }} className="text-lg py-6 px-8">
                 <PlusCircle className="mr-2 h-5 w-5" /> Deploy Another Project
-            </Button>
+            </Button> */}
         </div>
       </div>
     </div>

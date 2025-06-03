@@ -19,8 +19,6 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  // Navbar and its related logic (pathname, showNavbar) have been removed
-
   return (
     <html lang="en">
       <head>
@@ -34,7 +32,6 @@ export default function RootLayout({
       </head>
       <body className="font-body antialiased bg-background text-foreground">
         <AuthProvider>
-          {/* Navbar has been removed */}
           <main>{children}</main>
           <Toaster />
         </AuthProvider>

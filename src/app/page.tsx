@@ -1,4 +1,3 @@
-
 // src/app/page.tsx
 'use client';
 
@@ -10,7 +9,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Chrome, GithubIcon, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { Navbar } from '@/components/Navbar';
 
 export default function HomePage() {
   const { currentUser, loading } = useAuth();
@@ -55,7 +53,6 @@ export default function HomePage() {
   if (loading || (!loading && currentUser)) {
     return (
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4 text-center relative">
-        <Navbar />
         <div className="flex-grow flex flex-col items-center justify-center">
           <Loader2 className="h-16 w-16 animate-spin mb-6 text-primary" />
           <p className="text-xl text-muted-foreground">Loading session...</p>
@@ -65,23 +62,15 @@ export default function HomePage() {
   }
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center bg-background pt-4 sm:pt-8 md:pt-12 p-4">
-      <Navbar />
+    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4">
       <div className="flex flex-col items-center justify-center flex-grow w-full text-center">
-        <h1
-          className="text-6xl sm:text-7xl md:text-8xl font-bold tracking-tight mb-12 animated-gradient-text-fill"
-          data-text="DeployEase"
-        >
-          DeployEase
-        </h1>
-        
         <div className="space-y-4 sm:space-y-0 sm:space-x-6 flex flex-col sm:flex-row items-center justify-center">
            {googleProvider && (
             <Button
               onClick={() => handleSignIn(googleProvider)}
               variant="default"
               size="lg"
-              className="w-full max-w-[280px] sm:w-72 text-lg py-6" // Adjusted width and padding
+              className="w-full max-w-[280px] sm:w-72 text-lg py-6"
             >
               <Chrome className="mr-3 h-5 w-5" /> Sign In with Google
             </Button>
@@ -91,7 +80,7 @@ export default function HomePage() {
               onClick={() => handleSignIn(githubProvider)}
               variant="default"
               size="lg"
-              className="w-full max-w-[280px] sm:w-72 text-lg py-6" // Adjusted width and padding
+              className="w-full max-w-[280px] sm:w-72 text-lg py-6"
             >
               <GithubIcon className="mr-3 h-5 w-5" /> Sign In with GitHub
             </Button>

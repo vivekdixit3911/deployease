@@ -1,4 +1,3 @@
-
 // src/app/login/page.tsx
 'use client';
 
@@ -11,7 +10,6 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Chrome, GithubIcon, Loader2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { Navbar } from '@/components/Navbar';
 
 export default function LoginPage() {
   const { currentUser, loading } = useAuth();
@@ -56,7 +54,6 @@ export default function LoginPage() {
   if (loading || (!loading && currentUser)) {
     return (
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4 text-center relative">
-        <Navbar />
         <div className="flex-grow flex flex-col items-center justify-center">
           <Loader2 className="h-16 w-16 animate-spin mb-6 text-primary" />
           <p className="text-xl text-muted-foreground">Loading session...</p>
@@ -66,8 +63,7 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen w-full flex flex-col items-center bg-background pt-4 sm:pt-8 md:pt-12 p-4">
-      <Navbar />
+    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-background p-4">
       <div className="flex flex-col items-center justify-center flex-grow w-full">
         <Card className="w-full max-w-md shadow-xl">
           <CardHeader className="text-center">
